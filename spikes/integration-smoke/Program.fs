@@ -1,6 +1,90 @@
 open System
+open Dropd.Core
+open Dropd.Core.Types
+
+// ── Formatting helpers ────────────────────────────────────────────────────
+
+let private serviceLabel = function
+    | ApiContracts.AppleMusic -> "apple"
+    | ApiContracts.LastFm     -> "lastfm"
+
+let private levelLabel = function
+    | ApiContracts.Debug   -> "DEBUG  "
+    | ApiContracts.Info    -> "INFO   "
+    | ApiContracts.Warning -> "WARNING"
+    | ApiContracts.Error   -> "ERROR  "
+
+let private printRequests (requests: ApiContracts.ApiRequest list) =
+    printfn ""
+    printfn "── Requests (%d) ──────────────────────────────────" requests.Length
+    for r in requests do
+        let qs =
+            if List.isEmpty r.Query then ""
+            else "?" + String.concat "&" (r.Query |> List.map (fun (k,v) -> $"{k}={v}"))
+        printfn "  [%s] %s %s%s" (serviceLabel r.Service) r.Method r.Path qs
+
+let private printLogs (logs: ApiContracts.LogEntry list) =
+    printfn ""
+    printfn "── Logs (%d) ───────────────────────────────────────" logs.Length
+    for entry in logs do
+        printfn "  %s [%s] %s" (levelLabel entry.Level) entry.Code entry.Message
+        for KeyValue(k, v) in entry.Data do
+            printfn "         %s: %s" k v
+
+let private printOutcome = function
+    | Success           -> printfn "\n✓ Outcome: success"
+    | PartialFailure    -> printfn "\n⚠ Outcome: partial_failure (some playlist operations failed)"
+    | Aborted reason    -> printfn "\n✗ Outcome: aborted (%s)" reason
+
+let private exitCodeFor = function
+    | Aborted _ -> 1
+    | _         -> 0
+
+// ── Entry point ───────────────────────────────────────────────────────────
 
 [<EntryPoint>]
 let main _argv =
-    printfn "integration-smoke: not yet implemented"
-    0
+    printfn ""
+    printfn "════════════════════════════════════════"
+    printfn "  dropd — Integration Smoke"
+    printfn "════════════════════════════════════════"
+
+    match SmokeConfig.load () with
+    | Error msg ->
+        eprintfn "\nError: %s" msg
+        1
+    | Ok rawConfig ->
+
+    match Config.validate rawConfig with
+    | Error errors ->
+        eprintfn "\nConfig validation failed:"
+        for e in errors do eprintfn "  %A" e
+        1
+    | Ok config ->
+
+    printfn ""
+    printfn "Config:"
+    printfn "  Playlists   : %d defined" config.Playlists.Length
+    for p in config.Playlists do
+        let genres = String.concat ", " p.GenreCriteria
+        printfn "    • %s [%s]" p.Name genres
+    let labelStr =
+        if List.isEmpty config.LabelNames then "(none)"
+        else String.concat ", " config.LabelNames
+    printfn "  Labels      : %s" labelStr
+    printfn "  Lookback    : %d days" (Config.PositiveInt.value config.LookbackDays)
+    printfn "  Rolling win : %d days" (Config.PositiveInt.value config.RollingWindowDays)
+    printfn "  Dev token   : [redacted]"
+    printfn "  User token  : [redacted]"
+    printfn ""
+    printfn "Running sync…"
+
+    let runtime = HttpRuntime.create ()
+    let outcome, observed = SyncEngine.runSync config runtime
+
+    printRequests observed.Requests
+    printLogs observed.Logs
+    printOutcome outcome
+
+    printfn ""
+    exitCodeFor outcome
