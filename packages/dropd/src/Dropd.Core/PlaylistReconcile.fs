@@ -32,12 +32,23 @@ module PlaylistReconcile =
 
         data
         |> List.choose (fun item ->
-            match tryGetString "id" item with
+            let attrs = item |> tryGetProperty "attributes"
+
+            // Library playlist tracks have library-scoped IDs (e.g. "i.Mla0tqxJ0Q")
+            // at the top level, but the catalog ID we need for dedup lives at
+            // attributes.playParams.catalogId.  Fall back to the top-level id when
+            // catalogId is absent (e.g. in test fixtures).
+            let catalogId =
+                attrs
+                |> Option.bind (tryGetProperty "playParams")
+                |> Option.bind (tryGetString "catalogId")
+                |> Option.orElse (tryGetString "id" item)
+
+            match catalogId with
             | None -> None
             | Some id ->
                 let releaseDate =
-                    item
-                    |> tryGetProperty "attributes"
+                    attrs
                     |> Option.bind (tryGetString "releaseDate")
                     |> Option.bind tryParseDateOnly
 

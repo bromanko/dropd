@@ -128,6 +128,43 @@ let tests =
               Expect.isFalse (addRequest.Body.Value.Contains("track-9001-a")) "existing track should not be re-added"
               Expect.stringContains addRequest.Body.Value "track-9001-b" "new track should still be added"
 
+          testCase "DD-047b skips tracks when existing playlist uses library IDs with catalogId in playParams"
+          <| fun _ ->
+              // Real Apple Music playlists return library-scoped IDs (i.xxx) at
+              // the top level, with the catalog ID nested in
+              // attributes.playParams.catalogId.  The engine must use catalogId
+              // for dedup, not the library ID.
+              let existingBody =
+                  """
+{
+  "data": [
+    {
+      "id": "i.libraryId001",
+      "type": "library-songs",
+      "attributes": {
+        "releaseDate": "2026-02-20",
+        "playParams": { "catalogId": "track-9001-a", "id": "i.libraryId001", "isLibrary": true, "kind": "song" }
+      }
+    }
+  ]
+}
+"""
+
+              let output =
+                  runSync
+                      onePlaylist
+                      (setupWithExtras
+                          [ route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 playlistListWithElectronic))
+                            route "apple" "GET" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 existingBody))
+                            route "apple" "POST" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 "{}")) ])
+
+              let addRequest =
+                  output.Requests
+                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.existing/tracks")
+
+              Expect.isFalse (addRequest.Body.Value.Contains("track-9001-a")) "catalogId track should not be re-added"
+              Expect.stringContains addRequest.Body.Value "track-9001-b" "new track should still be added"
+
           testCase "DD-048 removes tracks outside rolling window"
           <| fun _ ->
               let existingBody = fixture "playlist-tracks-existing.json"
