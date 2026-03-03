@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="TestHarness.fs" />
+    <Compile Include="HarnessTests.fs" />
+    <Compile Include="RequirementCatalog.fs" />
+    <Compile Include="ArtistSeedingTests.fs" />
+    <Compile Include="LabelDiscoveryTests.fs" />
+    <Compile Include="SimilarArtistTests.fs" />
+    <Compile Include="ArtistFilteringTests.fs" />
+    <Compile Include="NewReleaseTests.fs" />
+    <Compile Include="GenreClassificationTests.fs" />
+    <Compile Include="PlaylistConfigTests.fs" />
+    <Compile Include="PlaylistManagementTests.fs" />
+    <Compile Include="SchedulingTests.fs" />
+    <Compile Include="AuthenticationTests.fs" />
+    <Compile Include="ObservabilityTests.fs" />
+    <Compile Include="ApiResilienceTests.fs" />
+    <Compile Include="RequirementCoverageTests.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Expecto" Version="10.2.3" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="9.0.0" />
+    <PackageReference Include="System.Text.Json" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Dropd.Core/Dropd.Core.fsproj" />
+  </ItemGroup>
+
+</Project>
