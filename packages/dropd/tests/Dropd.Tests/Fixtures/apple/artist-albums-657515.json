@@ -1,0 +1,39 @@
+{
+  "data": [
+    {
+      "id": "9001",
+      "attributes": {
+        "name": "Future Echoes",
+        "artistName": "Radiohead",
+        "artistId": "657515",
+        "releaseDate": "2026-02-20",
+        "genreNames": ["Electronic"]
+      },
+      "relationships": {
+        "tracks": {
+          "data": [
+            { "id": "track-9001-a" },
+            { "id": "track-9001-b" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "9002",
+      "attributes": {
+        "name": "Old Echoes",
+        "artistName": "Radiohead",
+        "artistId": "657515",
+        "releaseDate": "2025-12-15",
+        "genreNames": []
+      },
+      "relationships": {
+        "tracks": {
+          "data": [
+            { "id": "track-9002-a" }
+          ]
+        }
+      }
+    }
+  ]
+}

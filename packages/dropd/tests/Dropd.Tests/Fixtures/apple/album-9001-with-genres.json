@@ -1,0 +1,22 @@
+{
+  "data": [
+    {
+      "id": "9001",
+      "attributes": {
+        "name": "Future Echoes",
+        "artistName": "Bonobo",
+        "artistId": "5765078",
+        "releaseDate": "2026-02-20",
+        "genreNames": ["Electronic", "Dance"]
+      },
+      "relationships": {
+        "tracks": {
+          "data": [
+            { "id": "track-9001-a" },
+            { "id": "track-9001-b" }
+          ]
+        }
+      }
+    }
+  ]
+}
