@@ -92,6 +92,19 @@ already accepts, then calls `SyncEngine.runSync` and pretty-prints the results.
   expects `{"data":[{"id":"...","type":"songs"}]}`. Both fixed in
   `PlaylistReconcile.fs`.
 
+- **Fixed: Playlists addressed by name instead of ID — duplicate playlists on every run.**
+  The engine used playlist names in URL paths (e.g. `/v1/me/library/playlists/Electronic/tracks`)
+  but Apple Music addresses playlists by ID (e.g. `p.VKDUBYel0`). The GET always returned
+  404, so a new playlist was created on every sync. Fixed by adding a playlist listing step
+  (`GET /v1/me/library/playlists`) that builds a name→ID map, then using the resolved ID
+  for all track operations. When creating a new playlist, the returned ID is captured from
+  the response and used for subsequent track additions.
+
+- **Fixed: Apple Music returning gzip-compressed responses.** The `HttpClient` in
+  `HttpRuntime.fs` didn't have automatic decompression enabled. The playlist-create
+  response arrived gzip-compressed (`0x1F` byte), causing a JSON parse crash. Fixed by
+  setting `HttpClientHandler.AutomaticDecompression = DecompressionMethods.All`.
+
 
 ## Decision Log
 
