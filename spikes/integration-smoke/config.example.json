@@ -1,7 +1,10 @@
 {
   "playlists": [
-    { "name": "Electronic", "genreCriteria": ["Electronic"] },
-    { "name": "Jazz",       "genreCriteria": ["Jazz"] }
+    {
+      "name": "Electronic",
+      "genreCriteria": ["Electronic", "Dance", "House", "Techno", "Dubstep", "Ambient", "Trance"]
+    },
+    { "name": "Jazz", "genreCriteria": ["Jazz"] }
   ],
   "labelNames": ["Ninja Tune", "XL Recordings"]
 }

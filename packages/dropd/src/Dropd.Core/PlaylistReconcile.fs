@@ -22,6 +22,10 @@ module PlaylistReconcile =
     let private trackIdValue (CatalogTrackId value) = value
     let private withTrackId value = CatalogTrackId value
 
+    let private parseNextLink (body: string) : string option =
+        use document = JsonDocument.Parse(body)
+        tryGetString "next" document.RootElement
+
     let private parseExistingTracks (body: string) : ExistingTrack list =
         use document = JsonDocument.Parse(body)
 
@@ -130,6 +134,50 @@ module PlaylistReconcile =
                 return Ok(parsePlaylistMap response.Body)
             else
                 return Error response
+        }
+
+    /// Fetch all tracks from a playlist, following pagination `next` links.
+    /// Returns Ok tracks on success, or Error on the first failed page request.
+    /// A 404 response (empty playlist) is treated as zero tracks.
+    let private fetchAllPlaylistTracks
+        (config: Config.ValidSyncConfig)
+        (runtime: AC.ApiRuntime)
+        (playlistId: string)
+        : Async<Result<ExistingTrack list, int>> =
+        async {
+            let maxPages = 20
+            let acc = ResizeArray<ExistingTrack>()
+            let mutable nextPath = Some(playlistTracksPath playlistId)
+            let mutable page = 0
+            let mutable error = None
+
+            while nextPath.IsSome && page < maxPages && error.IsNone do
+                let path = nextPath.Value
+
+                let request: AC.ApiRequest =
+                    { Service = AC.AppleMusic
+                      Method = "GET"
+                      Path = path
+                      Query = []
+                      Headers = appleHeaders config path
+                      Body = None }
+
+                let! response = runtime.Execute request
+
+                if response.StatusCode >= 200 && response.StatusCode < 300 then
+                    acc.AddRange(parseExistingTracks response.Body)
+                    nextPath <- parseNextLink response.Body
+                    page <- page + 1
+                elif response.StatusCode = 404 then
+                    // Apple Music returns 404 for empty playlists.
+                    nextPath <- None
+                else
+                    error <- Some response.StatusCode
+                    nextPath <- None
+
+            match error with
+            | Some status -> return Error status
+            | None -> return Ok(acc |> Seq.toList)
         }
 
     let computePlan
@@ -316,32 +364,18 @@ module PlaylistReconcile =
                     async {
                         match playlistMap |> Map.tryFind playlist.Name with
                         | Some existingId ->
-                            // Playlist exists — fetch its current tracks.
-                            let tracksPath = playlistTracksPath existingId
+                            // Playlist exists — fetch all pages of current tracks.
+                            let! tracksResult = fetchAllPlaylistTracks config runtime existingId
 
-                            let getRequest: AC.ApiRequest =
-                                { Service = AC.AppleMusic
-                                  Method = "GET"
-                                  Path = tracksPath
-                                  Query = []
-                                  Headers = appleHeaders config tracksPath
-                                  Body = None }
-
-                            let! tracksResponse = runtime.Execute getRequest
-
-                            if tracksResponse.StatusCode >= 200 && tracksResponse.StatusCode < 300 then
-                                return Some existingId, parseExistingTracks tracksResponse.Body, false
-                            elif tracksResponse.StatusCode = 404 then
-                                // Apple Music returns 404 "No related resources" for
-                                // empty playlists.  Treat as zero existing tracks.
-                                return Some existingId, [], false
-                            else
+                            match tracksResult with
+                            | Ok tracks -> return Some existingId, tracks, false
+                            | Error status ->
                                 logAcc.Add(
                                     mkLog
                                         AC.Error
                                         "PlaylistTrackListFailure"
                                         $"Failed to read playlist '{playlist.Name}'."
-                                        (Map [ "playlist", playlist.Name; "status", string tracksResponse.StatusCode ])
+                                        (Map [ "playlist", playlist.Name; "status", string status ])
                                 )
 
                                 return Some existingId, [], true
