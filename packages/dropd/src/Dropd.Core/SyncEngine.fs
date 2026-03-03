@@ -244,10 +244,24 @@ module SyncEngine =
             None
         |> toResult parseSearchLabelId
 
+    let private parseLabelViewReleases (body: string) : AC.DiscoveredRelease list =
+        use document = JsonDocument.Parse(body)
+
+        document.RootElement
+        |> tryGetProperty "views"
+        |> Option.bind (tryGetProperty "latest-releases")
+        |> Option.bind (tryGetProperty "data")
+        |> Option.map (fun data ->
+            if data.ValueKind = JsonValueKind.Array then
+                data.EnumerateArray() |> Seq.toList |> List.choose parseRelease
+            else
+                [])
+        |> Option.defaultValue []
+
     let private fetchLabelReleases (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (labelId: string) =
-        let path = $"/v1/catalog/us/record-labels/{labelId}/latest-releases"
-        executeApple config runtime "GET" path [ "limit", "25" ] None
-        |> toResult parseReleaseList
+        let path = $"/v1/catalog/us/record-labels/{labelId}"
+        executeApple config runtime "GET" path [ "views", "latest-releases" ] None
+        |> toResult parseLabelViewReleases
 
     // Finding 3 / 9: use cons-and-reverse (prepend then List.rev at the end) to
     // eliminate the O(n²) @ appends from the original folder.
@@ -290,7 +304,7 @@ module SyncEngine =
                             "ApiFailure"
                             "Failed to fetch latest releases for label."
                             (Map
-                                [ "endpoint", $"/v1/catalog/us/record-labels/{labelId}/latest-releases"
+                                [ "endpoint", $"/v1/catalog/us/record-labels/{labelId}?views=latest-releases"
                                   "status", string response.StatusCode
                                   // Finding 15: truncate response body before logging.
                                   "message", truncateBody response.Body ])

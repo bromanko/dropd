@@ -44,7 +44,7 @@ let private happySetup extraRoutes =
         ([ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 singleLibraryArtistBody))
            route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515" ] (Always(withStatus 200 singleRatingBody))
            route "apple" "GET" "/v1/catalog/us/search" [ "term", "Ninja Tune"; "types", "record-labels" ] (Always(okFixture "label-search-ninja-tune.json"))
-           route "apple" "GET" "/v1/catalog/us/record-labels/1543411840/latest-releases" [] (Always(okFixture "label-latest-releases-1543411840.json"))
+           route "apple" "GET" "/v1/catalog/us/record-labels/1543411840" [] (Always(okFixture "label-latest-releases-1543411840.json"))
            route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
            route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-5765078.json"))
            route "apple" "GET" "/v1/catalog/us/albums/9002" [] (Always(okFixture "album-9002-no-genres.json"))
@@ -67,7 +67,7 @@ let tests =
                   "seed artist release query should run"
 
               Expect.isTrue
-                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/catalog/us/record-labels/1543411840/latest-releases"))
+                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/catalog/us/record-labels/1543411840"))
                   "label release query should run"
 
           testCase "DD-024 retrieves releases sorted by release date descending"

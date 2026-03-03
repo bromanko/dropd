@@ -1,39 +1,45 @@
 {
-  "data": [
-    {
-      "id": "9001",
-      "attributes": {
-        "name": "Future Echoes",
-        "artistName": "Bonobo",
-        "artistId": "5765078",
-        "releaseDate": "2026-02-20",
-        "genreNames": ["Electronic"]
-      },
-      "relationships": {
-        "tracks": {
-          "data": [
-            { "id": "track-9001-a" },
-            { "id": "track-9001-b" }
-          ]
+  "id": "1543411840",
+  "type": "record-labels",
+  "views": {
+    "latest-releases": {
+      "data": [
+        {
+          "id": "9001",
+          "attributes": {
+            "name": "Future Echoes",
+            "artistName": "Bonobo",
+            "artistId": "5765078",
+            "releaseDate": "2026-02-20",
+            "genreNames": ["Electronic"]
+          },
+          "relationships": {
+            "tracks": {
+              "data": [
+                { "id": "track-9001-a" },
+                { "id": "track-9001-b" }
+              ]
+            }
+          }
+        },
+        {
+          "id": "9002",
+          "attributes": {
+            "name": "Old Echoes",
+            "artistName": "Bonobo",
+            "artistId": "5765078",
+            "releaseDate": "2025-12-15",
+            "genreNames": []
+          },
+          "relationships": {
+            "tracks": {
+              "data": [
+                { "id": "track-9002-a" }
+              ]
+            }
+          }
         }
-      }
-    },
-    {
-      "id": "9002",
-      "attributes": {
-        "name": "Old Echoes",
-        "artistName": "Bonobo",
-        "artistId": "5765078",
-        "releaseDate": "2025-12-15",
-        "genreNames": []
-      },
-      "relationships": {
-        "tracks": {
-          "data": [
-            { "id": "track-9002-a" }
-          ]
-        }
-      }
+      ]
     }
-  ]
+  }
 }

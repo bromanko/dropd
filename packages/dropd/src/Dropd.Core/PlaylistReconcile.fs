@@ -107,10 +107,18 @@ module PlaylistReconcile =
                     else
                         // Finding 4 / 11: JsonObject prevents JSON injection from
                         // track IDs containing quotes or backslashes.
+                        // Apple Music API expects: {"data":[{"id":"...","type":"songs"}]}
                         let arr = JsonArray()
-                        plan.AddTracks |> List.iter (fun t -> arr.Add(JsonValue.Create(trackIdValue t)))
+
+                        plan.AddTracks
+                        |> List.iter (fun t ->
+                            let item = JsonObject()
+                            item["id"] <- JsonValue.Create(trackIdValue t)
+                            item["type"] <- JsonValue.Create("songs")
+                            arr.Add(item))
+
                         let node = JsonObject()
-                        node["trackIds"] <- arr
+                        node["data"] <- arr
                         let body = node.ToJsonString()
 
                         let path = playlistPath plan.PlaylistName
@@ -222,8 +230,11 @@ module PlaylistReconcile =
                         if existingResponse.StatusCode = 404 then
                             // Finding 4 / 11: JsonObject prevents JSON injection from
                             // playlist names containing quotes or backslashes.
+                            // Apple Music API requires: {"attributes":{"name":"..."}}
+                            let attrs = JsonObject()
+                            attrs["name"] <- JsonValue.Create(playlist.Name)
                             let node = JsonObject()
-                            node["name"] <- JsonValue.Create(playlist.Name)
+                            node["attributes"] <- attrs
                             let createBody = node.ToJsonString()
 
                             let createPath = "/v1/me/library/playlists"

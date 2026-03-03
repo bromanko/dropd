@@ -26,7 +26,7 @@ let tests =
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
                         route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
                         route "apple" "GET" "/v1/catalog/us/search" [ "term", "Ninja Tune"; "types", "record-labels" ] (Always(okFixture "label-search-ninja-tune.json"))
-                        route "apple" "GET" "/v1/catalog/us/record-labels/1543411840/latest-releases" [] (Always(okFixture "label-latest-releases-1543411840.json")) ]
+                        route "apple" "GET" "/v1/catalog/us/record-labels/1543411840" [] (Always(okFixture "label-latest-releases-1543411840.json")) ]
 
               let output = runSync (noPlaylistConfig [ "Ninja Tune" ]) setup
 
@@ -42,12 +42,12 @@ let tests =
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
                         route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
                         route "apple" "GET" "/v1/catalog/us/search" [ "term", "Ninja Tune"; "types", "record-labels" ] (Always(okFixture "label-search-ninja-tune.json"))
-                        route "apple" "GET" "/v1/catalog/us/record-labels/1543411840/latest-releases" [] (Always(okFixture "label-latest-releases-1543411840.json")) ]
+                        route "apple" "GET" "/v1/catalog/us/record-labels/1543411840" [] (Always(okFixture "label-latest-releases-1543411840.json")) ]
 
               let output = runSync (noPlaylistConfig [ "Ninja Tune" ]) setup
 
               Expect.isTrue
-                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/catalog/us/record-labels/1543411840/latest-releases"))
+                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/catalog/us/record-labels/1543411840"))
                   "latest releases endpoint should be called"
 
           testCase "DD-007 logs warning for unresolved label"
@@ -73,11 +73,11 @@ let tests =
                         route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
                         route "apple" "GET" "/v1/catalog/us/search" [ "term", "FakeLabel"; "types", "record-labels" ] (Always(okFixture "label-search-empty.json"))
                         route "apple" "GET" "/v1/catalog/us/search" [ "term", "Ninja Tune"; "types", "record-labels" ] (Always(okFixture "label-search-ninja-tune.json"))
-                        route "apple" "GET" "/v1/catalog/us/record-labels/1543411840/latest-releases" [] (Always(okFixture "label-latest-releases-1543411840.json")) ]
+                        route "apple" "GET" "/v1/catalog/us/record-labels/1543411840" [] (Always(okFixture "label-latest-releases-1543411840.json")) ]
 
               let output = runSync (noPlaylistConfig [ "FakeLabel"; "Ninja Tune" ]) setup
 
               Expect.isTrue
-                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/catalog/us/record-labels/1543411840/latest-releases"))
+                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/catalog/us/record-labels/1543411840"))
                   "sync should continue to resolved labels after unresolved one"
         ]
