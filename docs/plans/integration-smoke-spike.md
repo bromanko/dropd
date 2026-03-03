@@ -105,6 +105,17 @@ already accepts, then calls `SyncEngine.runSync` and pretty-prints the results.
   response arrived gzip-compressed (`0x1F` byte), causing a JSON parse crash. Fixed by
   setting `HttpClientHandler.AutomaticDecompression = DecompressionMethods.All`.
 
+- **Fixed: Apple Music returns 404 for empty playlist tracks.** When a playlist exists but
+  has zero tracks, `GET /v1/me/library/playlists/{id}/tracks` returns HTTP 404 with error
+  code `40403` ("No related resources found for tracks") instead of `{"data":[]}`. The
+  engine treated this as a failure and logged `PlaylistTrackListFailure`. Fixed by treating
+  404 on the tracks endpoint as "zero existing tracks" rather than an error.
+
+- **"Warp Records" does not exist in Apple Music's record-labels catalog.** Searching for
+  `term=Warp+Records&types=record-labels` returns `{"results":{}}` (empty). This is a
+  catalog data limitation, not a code bug. The example config was updated to use
+  "XL Recordings" which resolves successfully.
+
 
 ## Decision Log
 
