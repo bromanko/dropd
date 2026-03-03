@@ -33,16 +33,27 @@ module SyncEngine =
             |> Seq.toList
         | _ -> []
 
-    let private parseArtistList (body: string) : Artist list =
+    /// Parse the ``data`` array from a JSON response body, applying a chooser
+    /// to each element.  Collects results in a single pass without intermediate
+    /// list allocations (Findings 7 & 9).
+    let private parseDataArray (body: string) (chooser: JsonElement -> 'a option) : 'a list =
         use document = JsonDocument.Parse(body)
 
-        let items =
-            match tryGetProperty "data" document.RootElement with
-            | Some value when value.ValueKind = JsonValueKind.Array -> value.EnumerateArray() |> Seq.toList
-            | _ -> []
+        match tryGetProperty "data" document.RootElement with
+        | Some data when data.ValueKind = JsonValueKind.Array ->
+            let results = ResizeArray()
+            let mutable enumerator = data.EnumerateArray()
 
-        items
-        |> List.choose (fun item ->
+            while enumerator.MoveNext() do
+                match chooser enumerator.Current with
+                | Some x -> results.Add(x)
+                | None -> ()
+
+            Seq.toList results
+        | _ -> []
+
+    let private parseArtistList (body: string) : Artist list =
+        parseDataArray body (fun item ->
             match tryGetString "id" item with
             | None -> None
             | Some id ->
@@ -53,6 +64,52 @@ module SyncEngine =
                     |> Option.defaultValue id
 
                 Some { Id = withArtistId id; Name = name })
+
+    /// Parse the library artist response (with `include=catalog`) and extract
+    /// catalog artist IDs and names from the `relationships.catalog.data` array.
+    /// Library artists whose catalog relationship is missing or empty are skipped
+    /// because their IDs cannot be used for catalog or ratings API calls.
+    let private parseLibraryArtistsWithCatalog (body: string) : Artist list =
+        parseDataArray body (fun item ->
+            item
+            |> tryGetProperty "relationships"
+            |> Option.bind (tryGetProperty "catalog")
+            |> Option.bind (tryGetProperty "data")
+            |> Option.bind (fun data ->
+                if data.ValueKind = JsonValueKind.Array then
+                    data.EnumerateArray() |> Seq.tryHead
+                else
+                    None)
+            |> Option.bind (fun catalogItem ->
+                match tryGetString "id" catalogItem with
+                | None -> None
+                | Some catalogId ->
+                    let name =
+                        catalogItem
+                        |> tryGetProperty "attributes"
+                        |> Option.bind (tryGetString "name")
+                        |> Option.defaultValue catalogId
+
+                    Some { Id = withArtistId catalogId; Name = name }))
+
+    /// Parse the `/v1/me/ratings/artists` response and return artist IDs that
+    /// have a positive rating (value = 1). The response contains rating objects
+    /// with `id` (the catalog artist ID) and `attributes.value` (1 or -1).
+    let private parseRatedArtistIds (body: string) : string list =
+        parseDataArray body (fun item ->
+            match tryGetString "id" item with
+            | None -> None
+            | Some id ->
+                let value =
+                    item
+                    |> tryGetProperty "attributes"
+                    |> Option.bind (fun attrs ->
+                        match tryGetProperty "value" attrs with
+                        | Some v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
+                        | _ -> None)
+                    |> Option.defaultValue 0
+
+                if value = 1 then Some id else None)
 
     let private parseSearchLabelId (body: string) =
         use document = JsonDocument.Parse(body)
@@ -108,12 +165,7 @@ module SyncEngine =
         | _ -> None
 
     let private parseReleaseList (body: string) : AC.DiscoveredRelease list =
-        use document = JsonDocument.Parse(body)
-
-        match tryGetProperty "data" document.RootElement with
-        | Some value when value.ValueKind = JsonValueKind.Array ->
-            value.EnumerateArray() |> Seq.toList |> List.choose parseRelease
-        | _ -> []
+        parseDataArray body parseRelease
 
     let private execute (runtime: AC.ApiRuntime) (request: AC.ApiRequest) = runtime.Execute request |> Async.RunSynchronously
 
@@ -140,30 +192,62 @@ module SyncEngine =
 
         execute runtime request
 
-    let fetchLibraryArtists (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) =
-        let response = executeApple config runtime "GET" "/v1/me/library/artists" [] None
-        if response.StatusCode >= 200 && response.StatusCode < 300 then Ok(parseArtistList response.Body) else Error response
+    let private toResult (parse: string -> 'a) (response: AC.ApiResponse) =
+        if response.StatusCode >= 200 && response.StatusCode < 300 then
+            Ok(parse response.Body)
+        else
+            Error response
 
-    let fetchFavoritedArtists (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) =
-        let response = executeApple config runtime "GET" "/v1/me/ratings/artists" [] None
-        if response.StatusCode >= 200 && response.StatusCode < 300 then Ok(parseArtistList response.Body) else Error response
+    let fetchLibraryArtists (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) =
+        executeApple config runtime "GET" "/v1/me/library/artists" [ "include", "catalog" ] None
+        |> toResult parseLibraryArtistsWithCatalog
+
+    let fetchFavoritedArtists (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (libraryArtists: Artist list) =
+        if List.isEmpty libraryArtists then
+            Ok []
+        else
+            let nameMap =
+                libraryArtists
+                |> List.map (fun a -> artistIdValue a.Id, a.Name)
+                |> Map.ofList
+
+            let batches = libraryArtists |> List.map (fun a -> a.Id) |> List.chunkBySize 25
+
+            let rec processBatches accBatches remaining =
+                match remaining with
+                | [] ->
+                    accBatches
+                    |> List.rev
+                    |> List.collect id
+                    |> List.distinct
+                    |> List.map (fun id ->
+                        { Id = CatalogArtistId id
+                          Name = nameMap |> Map.tryFind id |> Option.defaultValue id })
+                    |> Ok
+                | batch :: rest ->
+                    let ids = batch |> List.map artistIdValue |> String.concat ","
+                    let response = executeApple config runtime "GET" "/v1/me/ratings/artists" [ "ids", ids ] None
+
+                    match toResult parseRatedArtistIds response with
+                    | Ok ratedIds -> processBatches (ratedIds :: accBatches) rest
+                    | Error err -> Error err
+
+            processBatches [] batches
 
     let resolveLabelId (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (labelName: string) =
-        let response =
-            executeApple
-                config
-                runtime
-                "GET"
-                "/v1/catalog/us/search"
-                [ "term", labelName; "types", "record-labels"; "limit", "1" ]
-                None
-
-        if response.StatusCode >= 200 && response.StatusCode < 300 then Ok(parseSearchLabelId response.Body) else Error response
+        executeApple
+            config
+            runtime
+            "GET"
+            "/v1/catalog/us/search"
+            [ "term", labelName; "types", "record-labels"; "limit", "1" ]
+            None
+        |> toResult parseSearchLabelId
 
     let private fetchLabelReleases (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (labelId: string) =
         let path = $"/v1/catalog/us/record-labels/{labelId}/latest-releases"
-        let response = executeApple config runtime "GET" path [ "limit", "25" ] None
-        if response.StatusCode >= 200 && response.StatusCode < 300 then Ok(parseReleaseList response.Body) else Error response
+        executeApple config runtime "GET" path [ "limit", "25" ] None
+        |> toResult parseReleaseList
 
     // Finding 3 / 9: use cons-and-reverse (prepend then List.rev at the end) to
     // eliminate the O(n²) @ appends from the original folder.
@@ -227,8 +311,8 @@ module SyncEngine =
 
     let fetchArtistReleases (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (artistId: CatalogArtistId) =
         let path = $"/v1/catalog/us/artists/{artistIdValue artistId}/albums"
-        let response = executeApple config runtime "GET" path [ "sort", "-releaseDate"; "limit", "25" ] None
-        if response.StatusCode >= 200 && response.StatusCode < 300 then Ok(parseReleaseList response.Body) else Error response
+        executeApple config runtime "GET" path [ "sort", "-releaseDate"; "limit", "25" ] None
+        |> toResult parseReleaseList
 
     let filterByLookback (today: DateOnly) (lookbackDays: int) (releases: AC.DiscoveredRelease list) =
         releases |> List.filter (fun release -> Normalization.isWithinLookback today lookbackDays release.ReleaseDate)
@@ -237,8 +321,8 @@ module SyncEngine =
 
     let private fetchAlbumDetails (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (albumId: CatalogAlbumId) =
         let path = $"/v1/catalog/us/albums/{albumIdValue albumId}"
-        let response = executeApple config runtime "GET" path [] None
-        if response.StatusCode >= 200 && response.StatusCode < 300 then Ok(parseReleaseList response.Body |> List.tryHead) else Error response
+        executeApple config runtime "GET" path [] None
+        |> toResult (parseReleaseList >> List.tryHead)
 
     // Finding 9: use cons-and-reverse to eliminate the O(n²) @ appends from
     // classifyByGenres.
@@ -383,7 +467,7 @@ module SyncEngine =
 
                 abort "LibraryArtistsFailed"
         | Ok libraryArtists ->
-            match fetchFavoritedArtists config runtimeWithRecording with
+            match fetchFavoritedArtists config runtimeWithRecording libraryArtists with
             | Error response ->
                 match maybeAuthAbort "/v1/me/ratings/artists" response with
                 | Some reason -> abort reason

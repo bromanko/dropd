@@ -4,11 +4,31 @@ open Expecto
 open Dropd.Tests.TestHarness
 open Dropd.Tests.TestData
 
-let private seedBody =
+let private seedLibraryBody =
     """
 {
   "data": [
-    { "id": "657515", "attributes": { "name": "Radiohead" } }
+    {
+      "id": "r.abc123",
+      "type": "library-artists",
+      "attributes": { "name": "Radiohead" },
+      "relationships": {
+        "catalog": {
+          "data": [
+            { "id": "657515", "type": "artists", "attributes": { "name": "Radiohead" } }
+          ]
+        }
+      }
+    }
+  ]
+}
+"""
+
+let private seedRatingBody =
+    """
+{
+  "data": [
+    { "id": "657515", "type": "ratings", "attributes": { "value": 1 } }
   ]
 }
 """
@@ -20,8 +40,8 @@ let private baseConfig playlists =
 
 let private baseSetup extraRoutes =
     setupWith
-        ([ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 seedBody))
-           route "apple" "GET" "/v1/me/ratings/artists" [] (Always(withStatus 200 seedBody))
+        ([ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 seedLibraryBody))
+           route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515" ] (Always(withStatus 200 seedRatingBody))
            route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
            route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 404 "{}"))
            route "apple" "GET" "/v1/me/library/playlists/Dance%20Drops/tracks" [] (Always(withStatus 404 "{}"))

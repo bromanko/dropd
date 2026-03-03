@@ -77,7 +77,7 @@ let seedingAndLabelTests =
     testList
         "Unit.SyncEngine.SeedingAndLabels"
         [
-          testCase "fetchLibraryArtists requests /v1/me/library/artists"
+          testCase "fetchLibraryArtists requests /v1/me/library/artists with include=catalog"
           <| fun _ ->
               let runtime, state =
                   Helpers.runtimeWith
@@ -89,8 +89,11 @@ let seedingAndLabelTests =
               let result = SyncEngine.fetchLibraryArtists validConfig runtime
               Expect.isOk result "library request should succeed"
               Expect.equal state.Requests.Head.Path "/v1/me/library/artists" "path should match"
+              Expect.isTrue
+                  (state.Requests.Head.Query |> List.contains ("include", "catalog"))
+                  "include=catalog query parameter should be present"
 
-          testCase "fetchFavoritedArtists requests /v1/me/ratings/artists"
+          testCase "fetchFavoritedArtists requests /v1/me/ratings/artists with ids"
           <| fun _ ->
               let runtime, state =
                   Helpers.runtimeWith
@@ -99,9 +102,258 @@ let seedingAndLabelTests =
                           Query = []
                           Response = Helpers.ok (fixture "favorited-artists.json") } ]
 
-              let result = SyncEngine.fetchFavoritedArtists validConfig runtime
+              let artists =
+                  [ { Id = CatalogArtistId "657515"; Name = "Radiohead" }
+                    { Id = CatalogArtistId "29525428"; Name = "Bonobo" } ]
+
+              let result = SyncEngine.fetchFavoritedArtists validConfig runtime artists
               Expect.isOk result "favorites request should succeed"
               Expect.equal state.Requests.Head.Path "/v1/me/ratings/artists" "path should match"
+              Expect.isTrue
+                  (state.Requests.Head.Query |> List.exists (fun (k, _) -> k = "ids"))
+                  "ids query parameter should be present"
+
+              // Finding 11/12: verify returned artist content and names
+              let favoritedArtists = Result.defaultValue [] result
+              Expect.equal favoritedArtists.Length 2 "should return both rated artists"
+              Expect.equal favoritedArtists.[0].Id (CatalogArtistId "657515") "first artist ID"
+              Expect.equal favoritedArtists.[0].Name "Radiohead" "first artist should have human-readable name"
+              Expect.equal favoritedArtists.[1].Id (CatalogArtistId "29525428") "second artist ID"
+              Expect.equal favoritedArtists.[1].Name "Bonobo" "second artist should have human-readable name"
+
+          // Finding 2: test parseLibraryArtistsWithCatalog with missing catalog relationship
+          testCase "fetchLibraryArtists skips artists without catalog relationship"
+          <| fun _ ->
+              let body =
+                  """
+{
+  "data": [
+    {
+      "id": "r.local1",
+      "type": "library-artists",
+      "attributes": { "name": "Local Only" }
+    },
+    {
+      "id": "r.abc123",
+      "type": "library-artists",
+      "attributes": { "name": "Radiohead" },
+      "relationships": {
+        "catalog": {
+          "data": [
+            { "id": "657515", "type": "artists", "attributes": { "name": "Radiohead" } }
+          ]
+        }
+      }
+    }
+  ]
+}
+"""
+
+              let runtime, _ =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/me/library/artists"
+                          Query = []
+                          Response = Helpers.ok body } ]
+
+              let result = SyncEngine.fetchLibraryArtists validConfig runtime
+              let artists = Result.defaultValue [] result
+              Expect.equal artists.Length 1 "only the artist with catalog data should be returned"
+              Expect.equal artists.[0].Id (CatalogArtistId "657515") "returned artist should be the catalog-mapped one"
+              Expect.equal artists.[0].Name "Radiohead" "returned artist name should come from catalog"
+
+          testCase "fetchLibraryArtists skips artists with empty catalog data array"
+          <| fun _ ->
+              let body =
+                  """
+{
+  "data": [
+    {
+      "id": "r.empty1",
+      "type": "library-artists",
+      "attributes": { "name": "Empty Catalog" },
+      "relationships": {
+        "catalog": {
+          "data": []
+        }
+      }
+    },
+    {
+      "id": "r.abc123",
+      "type": "library-artists",
+      "attributes": { "name": "Radiohead" },
+      "relationships": {
+        "catalog": {
+          "data": [
+            { "id": "657515", "type": "artists", "attributes": { "name": "Radiohead" } }
+          ]
+        }
+      }
+    }
+  ]
+}
+"""
+
+              let runtime, _ =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/me/library/artists"
+                          Query = []
+                          Response = Helpers.ok body } ]
+
+              let result = SyncEngine.fetchLibraryArtists validConfig runtime
+              let artists = Result.defaultValue [] result
+              Expect.equal artists.Length 1 "artist with empty catalog data should be excluded"
+              Expect.equal artists.[0].Id (CatalogArtistId "657515") "only valid catalog artist returned"
+
+          // Finding 14: test catalog item with missing attributes.name (fallback to ID)
+          testCase "fetchLibraryArtists falls back to catalog ID when attributes.name is missing"
+          <| fun _ ->
+              let body =
+                  """
+{
+  "data": [
+    {
+      "id": "r.noname",
+      "type": "library-artists",
+      "attributes": { "name": "No Name Artist" },
+      "relationships": {
+        "catalog": {
+          "data": [
+            { "id": "999999", "type": "artists" }
+          ]
+        }
+      }
+    }
+  ]
+}
+"""
+
+              let runtime, _ =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/me/library/artists"
+                          Query = []
+                          Response = Helpers.ok body } ]
+
+              let result = SyncEngine.fetchLibraryArtists validConfig runtime
+              let artists = Result.defaultValue [] result
+              Expect.equal artists.Length 1 "artist should still be returned"
+              Expect.equal artists.[0].Name "999999" "name should fall back to catalog ID"
+
+          // Finding 3: test parseRatedArtistIds filtering by rating value
+          testCase "fetchFavoritedArtists excludes negatively-rated and unrated artists"
+          <| fun _ ->
+              let ratingBody =
+                  """
+{
+  "data": [
+    { "id": "111", "type": "ratings", "attributes": { "value": 1 } },
+    { "id": "222", "type": "ratings", "attributes": { "value": -1 } },
+    { "id": "333", "type": "ratings" }
+  ]
+}
+"""
+
+              let runtime, _ =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/me/ratings/artists"
+                          Query = []
+                          Response = Helpers.ok ratingBody } ]
+
+              let artists =
+                  [ { Id = CatalogArtistId "111"; Name = "Liked" }
+                    { Id = CatalogArtistId "222"; Name = "Disliked" }
+                    { Id = CatalogArtistId "333"; Name = "Unrated" } ]
+
+              let result = SyncEngine.fetchFavoritedArtists validConfig runtime artists
+              let favorited = Result.defaultValue [] result
+              Expect.equal favorited.Length 1 "only positively-rated artist should be returned"
+              Expect.equal favorited.[0].Id (CatalogArtistId "111") "rated artist ID"
+              Expect.equal favorited.[0].Name "Liked" "rated artist should preserve name"
+
+          // Finding 5: test fetchFavoritedArtists with empty input
+          testCase "fetchFavoritedArtists returns Ok empty list for empty input"
+          <| fun _ ->
+              let runtime, state = Helpers.runtimeWith []
+              let result = SyncEngine.fetchFavoritedArtists validConfig runtime []
+              Expect.equal result (Ok []) "empty input should return empty list"
+              Expect.equal state.Requests.Length 0 "no API requests should be made"
+
+          // Finding 4: test batching behavior (>25 artist IDs)
+          testCase "fetchFavoritedArtists batches requests for >25 artist IDs"
+          <| fun _ ->
+              let ratingBody =
+                  """{ "data": [{ "id": "artist-1", "type": "ratings", "attributes": { "value": 1 } }] }"""
+
+              let runtime, state =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/me/ratings/artists"
+                          Query = []
+                          Response = Helpers.ok ratingBody } ]
+
+              let artists =
+                  [ for i in 1..26 ->
+                        { Id = CatalogArtistId $"artist-{i}"
+                          Name = $"Artist {i}" } ]
+
+              let result = SyncEngine.fetchFavoritedArtists validConfig runtime artists
+              Expect.isOk result "should succeed"
+
+              let ratingRequests =
+                  state.Requests
+                  |> List.filter (fun r -> r.Path = "/v1/me/ratings/artists")
+
+              Expect.equal ratingRequests.Length 2 "should make two batched requests"
+
+              let firstIds =
+                  ratingRequests.[0].Query
+                  |> List.find (fun (k, _) -> k = "ids")
+                  |> snd
+
+              let secondIds =
+                  ratingRequests.[1].Query
+                  |> List.find (fun (k, _) -> k = "ids")
+                  |> snd
+
+              Expect.equal (firstIds.Split(',').Length) 25 "first batch should have 25 IDs"
+              Expect.equal (secondIds.Split(',').Length) 1 "second batch should have 1 ID"
+
+              // Results from both batches should be combined
+              let favorited = Result.defaultValue [] result
+              Expect.isTrue (favorited.Length >= 1) "should have results from batch processing"
+              Expect.equal favorited.[0].Name "Artist 1" "combined result should preserve name"
+
+          testCase "fetchFavoritedArtists returns error when any batch fails"
+          <| fun _ ->
+              let okBody =
+                  """{ "data": [{ "id": "artist-1", "type": "ratings", "attributes": { "value": 1 } }] }"""
+
+              let runtime, _ =
+                  Helpers.runtimeWith
+                      [ // Second batch (containing artist-26) returns error
+                        { Method = "GET"
+                          Path = "/v1/me/ratings/artists"
+                          Query = [ "ids", "artist-26" ]
+                          Response =
+                            { StatusCode = 500
+                              Body = """{"error":"server error"}"""
+                              Headers = [] } }
+                        // Fallback for first batch
+                        { Method = "GET"
+                          Path = "/v1/me/ratings/artists"
+                          Query = []
+                          Response = Helpers.ok okBody } ]
+
+              let artists =
+                  [ for i in 1..26 ->
+                        { Id = CatalogArtistId $"artist-{i}"
+                          Name = $"Artist {i}" } ]
+
+              let result = SyncEngine.fetchFavoritedArtists validConfig runtime artists
+              Expect.isError result "should return error when a batch fails"
 
           testCase "resolveLabelId uses search endpoint with record-label query"
           <| fun _ ->

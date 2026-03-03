@@ -2,14 +2,16 @@
   "data": [
     {
       "id": "657515",
+      "type": "ratings",
       "attributes": {
-        "name": "Radiohead"
+        "value": 1
       }
     },
     {
       "id": "29525428",
+      "type": "ratings",
       "attributes": {
-        "name": "Four Tet"
+        "value": 1
       }
     }
   ]

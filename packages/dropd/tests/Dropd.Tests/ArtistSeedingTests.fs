@@ -19,7 +19,7 @@ let tests =
               let setup =
                   setupWith
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
-                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json")) ]
+                        route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json")) ]
 
               let output = runSync baseConfig setup
 
@@ -32,7 +32,7 @@ let tests =
               let setup =
                   setupWith
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
-                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json")) ]
+                        route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json")) ]
 
               let output = runSync baseConfig setup
 
@@ -46,7 +46,7 @@ let tests =
                   """
 {
   "data": [
-    { "id": "657515", "attributes": { "name": "Radiohead" } }
+    { "id": "657515", "type": "ratings", "attributes": { "value": 1 } }
   ]
 }
 """
@@ -54,7 +54,7 @@ let tests =
               let setup =
                   setupWith
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
-                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(withStatus 200 dedupFavorites))
+                        route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(withStatus 200 dedupFavorites))
                         route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
                         route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-5765078.json")) ]
 

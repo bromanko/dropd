@@ -5,11 +5,31 @@ open Dropd.Core.Types
 open Dropd.Tests.TestHarness
 open Dropd.Tests.TestData
 
-let private singleArtistBody =
+let private singleLibraryArtistBody =
     """
 {
   "data": [
-    { "id": "657515", "attributes": { "name": "Radiohead" } }
+    {
+      "id": "r.abc123",
+      "type": "library-artists",
+      "attributes": { "name": "Radiohead" },
+      "relationships": {
+        "catalog": {
+          "data": [
+            { "id": "657515", "type": "artists", "attributes": { "name": "Radiohead" } }
+          ]
+        }
+      }
+    }
+  ]
+}
+"""
+
+let private singleRatingBody =
+    """
+{
+  "data": [
+    { "id": "657515", "type": "ratings", "attributes": { "value": 1 } }
   ]
 }
 """
@@ -21,8 +41,8 @@ let private playlistConfig =
 
 let private happySetup extraRoutes =
     setupWith
-        ([ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 singleArtistBody))
-           route "apple" "GET" "/v1/me/ratings/artists" [] (Always(withStatus 200 singleArtistBody))
+        ([ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 singleLibraryArtistBody))
+           route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515" ] (Always(withStatus 200 singleRatingBody))
            route "apple" "GET" "/v1/catalog/us/search" [ "term", "Ninja Tune"; "types", "record-labels" ] (Always(okFixture "label-search-ninja-tune.json"))
            route "apple" "GET" "/v1/catalog/us/record-labels/1543411840/latest-releases" [] (Always(okFixture "label-latest-releases-1543411840.json"))
            route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
@@ -148,8 +168,8 @@ let tests =
 
               let setup =
                   setupWith
-                      [ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 singleArtistBody))
-                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(withStatus 200 singleArtistBody))
+                      [ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 singleLibraryArtistBody))
+                        route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515" ] (Always(withStatus 200 singleRatingBody))
                         route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 200 duplicateTrackBody))
                         route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 404 "{}"))
                         route "apple" "POST" "/v1/me/library/playlists" [] (Always(okFixture "playlist-create-success.json"))

@@ -15,7 +15,7 @@ let private authConfig =
 let private happyAuthSetup =
     setupWith
         [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
-          route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json"))
+          route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
           route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
           route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-5765078.json")) ]
 

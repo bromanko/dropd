@@ -24,7 +24,7 @@ let tests =
               let setup =
                   setupWith
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
-                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json"))
+                        route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
                         route "apple" "GET" "/v1/catalog/us/search" [ "term", "Ninja Tune"; "types", "record-labels" ] (Always(okFixture "label-search-ninja-tune.json"))
                         route "apple" "GET" "/v1/catalog/us/record-labels/1543411840/latest-releases" [] (Always(okFixture "label-latest-releases-1543411840.json")) ]
 
@@ -40,7 +40,7 @@ let tests =
               let setup =
                   setupWith
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
-                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json"))
+                        route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
                         route "apple" "GET" "/v1/catalog/us/search" [ "term", "Ninja Tune"; "types", "record-labels" ] (Always(okFixture "label-search-ninja-tune.json"))
                         route "apple" "GET" "/v1/catalog/us/record-labels/1543411840/latest-releases" [] (Always(okFixture "label-latest-releases-1543411840.json")) ]
 
@@ -55,7 +55,7 @@ let tests =
               let setup =
                   setupWith
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
-                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json"))
+                        route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
                         route "apple" "GET" "/v1/catalog/us/search" [ "term", "FakeLabel"; "types", "record-labels" ] (Always(okFixture "label-search-empty.json")) ]
 
               let output = runSync (noPlaylistConfig [ "FakeLabel" ]) setup
@@ -70,7 +70,7 @@ let tests =
               let setup =
                   setupWith
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
-                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json"))
+                        route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
                         route "apple" "GET" "/v1/catalog/us/search" [ "term", "FakeLabel"; "types", "record-labels" ] (Always(okFixture "label-search-empty.json"))
                         route "apple" "GET" "/v1/catalog/us/search" [ "term", "Ninja Tune"; "types", "record-labels" ] (Always(okFixture "label-search-ninja-tune.json"))
                         route "apple" "GET" "/v1/catalog/us/record-labels/1543411840/latest-releases" [] (Always(okFixture "label-latest-releases-1543411840.json")) ]

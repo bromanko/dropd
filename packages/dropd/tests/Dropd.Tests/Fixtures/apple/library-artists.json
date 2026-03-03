@@ -1,15 +1,43 @@
 {
   "data": [
     {
-      "id": "657515",
+      "id": "r.abc123",
+      "type": "library-artists",
       "attributes": {
         "name": "Radiohead"
+      },
+      "relationships": {
+        "catalog": {
+          "data": [
+            {
+              "id": "657515",
+              "type": "artists",
+              "attributes": {
+                "name": "Radiohead"
+              }
+            }
+          ]
+        }
       }
     },
     {
-      "id": "5765078",
+      "id": "r.def456",
+      "type": "library-artists",
       "attributes": {
         "name": "Bonobo"
+      },
+      "relationships": {
+        "catalog": {
+          "data": [
+            {
+              "id": "5765078",
+              "type": "artists",
+              "attributes": {
+                "name": "Bonobo"
+              }
+            }
+          ]
+        }
       }
     }
   ]
