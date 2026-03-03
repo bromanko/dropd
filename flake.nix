@@ -32,6 +32,7 @@
               pkgs.dotnet-sdk_9
               pkgs.gnumake
               pkgs.overmind
+              pkgs.selfci
               pkgs.tmux
             ];
           };
