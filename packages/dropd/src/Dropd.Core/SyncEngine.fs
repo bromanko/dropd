@@ -211,7 +211,8 @@ module SyncEngine =
                 |> List.map (fun a -> artistIdValue a.Id, a.Name)
                 |> Map.ofList
 
-            let batches = libraryArtists |> List.map (fun a -> a.Id) |> List.chunkBySize 25
+            let uniqueArtists = libraryArtists |> Normalization.dedupByArtistId
+            let batches = uniqueArtists |> List.map (fun a -> a.Id) |> List.chunkBySize 25
 
             let rec processBatches accBatches remaining =
                 match remaining with
