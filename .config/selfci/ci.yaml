@@ -1,0 +1,13 @@
+# SelfCI Configuration
+
+job:
+  command: |
+    set -eou pipefail
+
+    selfci step start "build"
+    make build
+
+    selfci step start "test"
+    make test
+
+  clone-mode: partial
