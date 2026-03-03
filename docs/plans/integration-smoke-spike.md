@@ -120,6 +120,27 @@ already accepts, then calls `SyncEngine.runSync` and pretty-prints the results.
   from `playParams`, falling back to the top-level `id` for test fixtures. Added test
   DD-047b to cover this scenario.
 
+- **Fixed: Existing playlist track reads not paginated — tracks re-added every run.**
+  Apple Music returns at most 100 tracks per page from
+  `GET /v1/me/library/playlists/{id}/tracks`, with a `next` link for subsequent pages.
+  The engine read only the first page, so playlists with >100 tracks had the overflow
+  tracks re-added on every sync. Fixed by adding `fetchAllPlaylistTracks` which follows
+  `next` links up to 20 pages.
+
+- **Apple Music genre taxonomy uses sub-genres, not umbrella "Electronic".**  Most
+  electronic music is tagged as "Dance", "House", "Techno", "Dubstep", etc. — only some
+  albums also include "Electronic" as a genre. The example config was updated to include
+  common sub-genres in the criteria. This is a config concern, not a code bug (DD-032
+  specifies exact matching, which is correct).
+
+- **Known limitation: DELETE tracks from playlist returns 401.** The Apple Music REST API
+  appears not to support `DELETE /v1/me/library/playlists/{id}/tracks` — both catalog IDs
+  (via `?ids=` query) and library IDs (via JSON body) return HTTP 401. This means the
+  rolling-window track removal feature does not work against the real API. Once tracks age
+  beyond the rolling window, `computePlan` generates remove operations that fail, causing
+  `partial_failure` outcome. This needs further research (possibly a different API
+  mechanism or MusicKit scope).
+
 - **"Warp Records" does not exist in Apple Music's record-labels catalog.** Searching for
   `term=Warp+Records&types=record-labels` returns `{"results":{}}` (empty). This is a
   catalog data limitation, not a code bug. The example config was updated to use
