@@ -111,6 +111,15 @@ already accepts, then calls `SyncEngine.runSync` and pretty-prints the results.
   engine treated this as a failure and logged `PlaylistTrackListFailure`. Fixed by treating
   404 on the tracks endpoint as "zero existing tracks" rather than an error.
 
+- **Fixed: Existing playlist tracks compared by library ID instead of catalog ID — tracks
+  re-added on every run.** Apple Music playlist tracks have library-scoped IDs at the top
+  level (e.g. `i.Mla0tqxJ0Q`) but the catalog ID needed for dedup is nested at
+  `attributes.playParams.catalogId` (e.g. `1874397619`). The engine was comparing
+  library IDs against catalog track IDs from discovered releases, so tracks were never
+  recognized as already present. Fixed `parseExistingTracks` to extract `catalogId`
+  from `playParams`, falling back to the top-level `id` for test fixtures. Added test
+  DD-047b to cover this scenario.
+
 - **"Warp Records" does not exist in Apple Music's record-labels catalog.** Searching for
   `term=Warp+Records&types=record-labels` returns `{"results":{}}` (empty). This is a
   catalog data limitation, not a code bug. The example config was updated to use
