@@ -127,7 +127,28 @@ release retrieval, or playlist reconciliation.
 4. **Re-validate with integration smoke:** After the fix, `make smoke` should proceed past
    the favorited-artists step and continue into label discovery and release retrieval.
 
-**Status:** Open — not yet fixed.
+**Status:** Fixed — 2026-03-03.
+
+**Resolution:** The investigation confirmed that library artist IDs are library-scoped
+(e.g. `r.o9U81GC`), not catalog IDs. The `include=catalog` query parameter on
+`/v1/me/library/artists` returns the catalog relationship with catalog artist IDs. The
+fix:
+
+1. `fetchLibraryArtists` now passes `include=catalog` and uses a new
+   `parseLibraryArtistsWithCatalog` parser that extracts catalog IDs from
+   `relationships.catalog.data[0]`. Library artists without a catalog mapping are skipped.
+2. `fetchFavoritedArtists` now accepts `CatalogArtistId list`, batches them in groups of
+   25, and passes them as the `ids` query parameter. A new `parseRatedArtistIds` parser
+   extracts artist IDs with `attributes.value = 1` from the ratings response.
+3. `runSync` threads the library artist catalog IDs into `fetchFavoritedArtists`.
+4. Test fixtures updated: `library-artists.json` now uses the real API format with
+   library-scoped IDs and catalog relationships; `favorited-artists.json` now uses the
+   real ratings format (`type: "ratings"`, `attributes.value: 1`). All inline test bodies
+   in `NewReleaseTests.fs`, `GenreClassificationTests.fs`, `PlaylistManagementTests.fs`,
+   and `ArtistSeedingTests.fs` updated accordingly.
+5. All 101 tests pass with 0 failures. `make smoke` proceeds past the favorited-artists
+   step into label discovery, release retrieval, genre classification, and playlist
+   reconciliation.
 
 ## Outcomes & Retrospective
 

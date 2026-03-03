@@ -74,7 +74,20 @@ already accepts, then calls `SyncEngine.runSync` and pretty-prints the results.
   and batch them into the `ids` query parameter, but there is also a library-ID-to-catalog-ID
   mapping concern — library artists from `/v1/me/library/artists` may return library-scoped
   IDs (e.g. `r.xxx`) rather than catalog IDs, and the ratings endpoint expects catalog IDs.
-  This is tracked as a Phase 1 bug fix in `docs/plans/service-implementation-phase1.md`.
+  This was tracked as BUG-001 in `docs/plans/service-implementation-phase1.md` and has
+  been fixed. The fix uses `include=catalog` on the library artists endpoint to extract
+  catalog IDs, and batches them into the `ids` parameter on the ratings endpoint.
+
+- **Additional finding from live run:** The `latest-releases` relationship on record labels
+  returns 400 with "No relationship found matching 'latest-releases'" for some labels
+  (e.g. Ninja Tune label ID `1543990853`). The engine's label-latest-releases path
+  (`/v1/catalog/us/record-labels/{id}/latest-releases`) may need to use the `views`
+  parameter instead (e.g. `?views=latest-releases`). This is a separate issue from
+  BUG-001.
+
+- **Additional finding from live run:** Playlist creation returns 400. The playlist name
+  URL encoding or the POST body format may not match what the real Apple Music API expects.
+  This is a separate issue unrelated to BUG-001.
 
 
 ## Decision Log
