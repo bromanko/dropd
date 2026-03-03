@@ -13,9 +13,9 @@ This plan does not gate CI correctness for product behavior. It is intentionally
 
 ## Progress
 
-- [ ] (2026-03-03 00:19Z) Add Nix flake for reproducible local tooling.
-- [ ] (2026-03-03 00:19Z) Add optional direnv integration with explicit fallback path.
-- [ ] (2026-03-03 00:19Z) Add `Procfile` and `make dev` workflow.
+- [x] (2026-03-02 22:50Z) Add Nix flake for reproducible local tooling.
+- [x] (2026-03-02 22:50Z) Add optional direnv integration with explicit fallback path.
+- [x] (2026-03-02 22:52Z) Add `Procfile` and `make dev` workflow.
 - [ ] (2026-03-03 00:19Z) Scaffold `spikes/api-exploration/` project.
 - [ ] (2026-03-03 00:19Z) Implement Apple Music exploration script with credential checks.
 - [ ] (2026-03-03 00:19Z) Implement Last.fm exploration script with credential checks.
