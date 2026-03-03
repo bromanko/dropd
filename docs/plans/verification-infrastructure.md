@@ -15,19 +15,19 @@ User-visible outcome now: reproducible build/test pipeline with explicit require
 
 ## Progress
 
-- [ ] (2026-03-03 00:19Z) Create `dropd.sln` and make root build deterministic.
-- [ ] (2026-03-03 00:19Z) Create `packages/dropd/src/Dropd.Core/` with `Types.fs`, `Config.fs`, and `Scheduling.fs` interfaces.
-- [ ] (2026-03-03 00:19Z) Create `packages/dropd/tests/Dropd.Tests/` project with Expecto and harness dependencies.
-- [ ] (2026-03-03 00:19Z) Add `Makefile` targets (`build`, `test`, `test-dd`, `clean`) with explicit project/solution paths.
-- [ ] (2026-03-03 00:19Z) Add `.selfci` to run only green gates (`make build`, `make test`).
-- [ ] (2026-03-03 00:19Z) Implement test harness route scripting model (supports sequential responses and request capture).
-- [ ] (2026-03-03 00:19Z) Add harness unit tests that verify route matching, sequence behavior, and request capture.
-- [ ] (2026-03-03 00:19Z) Add `packages/dropd/tests/Dropd.Tests/RequirementCatalog.fs` listing DD-001..DD-089 exactly once.
-- [ ] (2026-03-03 00:19Z) Add requirement coverage test to fail if any DD ID is missing or duplicated.
-- [ ] (2026-03-03 00:19Z) Add DD-036..DD-044 as active passing tests.
-- [ ] (2026-03-03 00:19Z) Add DD-001..DD-035 and DD-045..DD-089 as `ptestCase` pending tests with concrete setup/assertion notes.
-- [ ] (2026-03-03 00:19Z) Replace all "verified by comment/spike" placeholders with executable test cases (active or pending).
-- [ ] (2026-03-03 00:19Z) Validate final test summary and DD coverage counts.
+- [x] (2026-03-03 03:22Z) Create `dropd.sln` and make root build deterministic.
+- [x] (2026-03-03 03:22Z) Create `packages/dropd/src/Dropd.Core/` with `Types.fs`, `Config.fs`, and `Scheduling.fs` interfaces.
+- [x] (2026-03-03 03:22Z) Create `packages/dropd/tests/Dropd.Tests/` project with Expecto and harness dependencies.
+- [x] (2026-03-03 03:22Z) Add `Makefile` targets (`build`, `test`, `test-dd`, `clean`) with explicit project/solution paths.
+- [x] (2026-03-03 03:22Z) Add `.selfci` to run only green gates (`make build`, `make test`).
+- [x] (2026-03-03 03:23Z) Implement test harness route scripting model (supports sequential responses and request capture).
+- [x] (2026-03-03 03:23Z) Add harness unit tests that verify route matching, sequence behavior, and request capture.
+- [x] (2026-03-03 03:27Z) Add `packages/dropd/tests/Dropd.Tests/RequirementCatalog.fs` listing DD-001..DD-089 exactly once.
+- [x] (2026-03-03 03:27Z) Add requirement coverage test to fail if any DD ID is missing or duplicated.
+- [x] (2026-03-03 03:27Z) Add DD-036..DD-044 as active passing tests.
+- [x] (2026-03-03 03:27Z) Add DD-001..DD-035 and DD-045..DD-089 as `ptestCase` pending tests with concrete setup/assertion notes.
+- [x] (2026-03-03 03:27Z) Replace all "verified by comment/spike" placeholders with executable test cases (active or pending).
+- [x] (2026-03-03 03:28Z) Validate final test summary and DD coverage counts.
 
 
 ## Surprises & Discoveries
@@ -69,7 +69,7 @@ User-visible outcome now: reproducible build/test pipeline with explicit require
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+- 2026-03-03 03:28Z — All milestones complete. `make clean && make build && make test` green from repo root. 21 passed (9 harness + 3 coverage + 9 DD-036..DD-044), 80 pending, 0 failed. 89 unique DD IDs confirmed via `--list-tests` discovery. `.selfci` added to flake.nix dev shell. `.direnv` files untracked from jj.
 
 
 ## Context and Orientation
