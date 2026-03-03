@@ -7,6 +7,11 @@
   <ItemGroup>
     <Compile Include="Types.fs" />
     <Compile Include="Config.fs" />
+    <Compile Include="Normalization.fs" />
+    <Compile Include="ApiContracts.fs" />
+    <Compile Include="JsonHelpers.fs" />
+    <Compile Include="PlaylistReconcile.fs" />
+    <Compile Include="SyncEngine.fs" />
     <Compile Include="Scheduling.fs" />
   </ItemGroup>
 
