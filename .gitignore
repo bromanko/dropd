@@ -1,0 +1,5 @@
+bin/
+obj/
+.overmind.sock
+.direnv/
+.envrc.local
