@@ -1,4 +1,6 @@
 open System
+open System.IO
+open System.Text.Json
 open Dropd.Core
 open Dropd.Core.Types
 
@@ -40,6 +42,34 @@ let private exitCodeFor = function
     | Aborted _ -> 1
     | _         -> 0
 
+// ── Playlist ID cache ─────────────────────────────────────────────────────
+// Apple Music's playlist listing endpoint has severe eventual consistency
+// issues — newly created playlists may not appear for minutes. We persist
+// a local name→ID map so subsequent runs find playlists reliably.
+
+let private cachePath =
+    let assemblyDir = Path.GetDirectoryName(Reflection.Assembly.GetExecutingAssembly().Location)
+    Path.Combine(assemblyDir, "playlist-cache.json")
+
+let private loadPlaylistCache () : Map<string, string> =
+    try
+        if File.Exists(cachePath) then
+            let json = File.ReadAllText(cachePath)
+            let dict = JsonSerializer.Deserialize<System.Collections.Generic.Dictionary<string, string>>(json)
+            dict |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+        else
+            Map.empty
+    with _ ->
+        Map.empty
+
+let private savePlaylistCache (ids: Map<string, string>) =
+    try
+        let opts = JsonSerializerOptions(WriteIndented = true)
+        let json = JsonSerializer.Serialize(ids |> Map.toSeq |> dict, opts)
+        File.WriteAllText(cachePath, json)
+    with _ ->
+        ()
+
 // ── Entry point ───────────────────────────────────────────────────────────
 
 [<EntryPoint>]
@@ -80,7 +110,14 @@ let main _argv =
     printfn "Running sync…"
 
     let runtime = HttpRuntime.create ()
-    let outcome, observed = SyncEngine.runSync config runtime
+    let cachedIds = loadPlaylistCache ()
+    let outcome, observed = SyncEngine.runSync config runtime cachedIds
+
+    // Merge cached IDs with newly resolved ones and persist.
+    let mergedIds =
+        observed.ResolvedPlaylistIds
+        |> Map.fold (fun acc k v -> Map.add k v acc) cachedIds
+    savePlaylistCache mergedIds
 
     printRequests observed.Requests
     printLogs observed.Logs

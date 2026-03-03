@@ -406,7 +406,7 @@ module SyncEngine =
             if isSensitiveHeader name then name, "[redacted]"
             else name, value)
 
-    let runSync (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) : Types.SyncOutcome * AC.ObservedSync =
+    let runSync (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
         let recordedRequests = ResizeArray<AC.ApiRequest>()
         let recordedLogs = ResizeArray<AC.LogEntry>()
 
@@ -424,13 +424,15 @@ module SyncEngine =
 
         let appendLog level code message data = recordedLogs.Add(mkLog level code message data)
         let appendLogs logs = logs |> List.iter recordedLogs.Add
+        let mutable resolvedPlaylistIds = Map.empty
 
         let snapshot outcome =
             appendLog AC.Info "SyncOutcome" "Sync finished." (Map [ "outcome", outcomeToText outcome ])
 
             let observed: AC.ObservedSync =
                 { Requests = recordedRequests |> Seq.toList
-                  Logs = recordedLogs |> Seq.toList }
+                  Logs = recordedLogs |> Seq.toList
+                  ResolvedPlaylistIds = resolvedPlaylistIds }
 
             outcome, observed
 
@@ -553,10 +555,11 @@ module SyncEngine =
                     // reconcilePlaylists now returns Async; run it synchronously
                     // at this single top-level call site (Finding 1 / 8).
                     let reconcileResult, reconcileLogs =
-                        PlaylistReconcile.reconcilePlaylists config discovery runtimeWithRecording
+                        PlaylistReconcile.reconcilePlaylists config discovery runtimeWithRecording knownPlaylistIds
                         |> Async.RunSynchronously
 
                     appendLogs reconcileLogs
+                    resolvedPlaylistIds <- reconcileResult.ResolvedPlaylistIds
 
                     let outcome = if reconcileResult.HadPlaylistFailures then PartialFailure else Success
 

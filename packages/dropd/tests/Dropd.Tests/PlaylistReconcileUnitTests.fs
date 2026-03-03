@@ -190,7 +190,7 @@ let tests =
               let runtime, _ = Helpers.runtimeFrom handler
 
               let result, logs =
-                  PlaylistReconcile.reconcilePlaylists cfg discovery runtime |> Async.RunSynchronously
+                  PlaylistReconcile.reconcilePlaylists cfg discovery runtime Map.empty |> Async.RunSynchronously
 
               Expect.isEmpty logs "no error logs expected for valid parse"
               Expect.isFalse result.HadPlaylistFailures "should not report failure for malformed items"
@@ -216,7 +216,7 @@ let tests =
                   | _ -> Helpers.response 200 "{}"
 
               let runtime, state = Helpers.runtimeFrom handler
-              let result, logs = PlaylistReconcile.reconcilePlaylists cfg discovery runtime |> Async.RunSynchronously
+              let result, logs = PlaylistReconcile.reconcilePlaylists cfg discovery runtime Map.empty |> Async.RunSynchronously
 
               Expect.isTrue result.HadPlaylistFailures "partial failure flag should be set"
 

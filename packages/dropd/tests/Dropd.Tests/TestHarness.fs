@@ -187,7 +187,7 @@ module TestHarness =
               Outcome = Some(Aborted "InvalidConfig") }
         | Ok validConfig ->
             let runtime = createRuntime setup
-            let outcome, observed = SyncEngine.runSync validConfig runtime
+            let outcome, observed = SyncEngine.runSync validConfig runtime Map.empty
 
             { Requests = observed.Requests |> List.map toRecordedRequest
               Logs = observed.Logs

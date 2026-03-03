@@ -35,7 +35,10 @@ module ApiContracts =
 
     type ObservedSync =
         { Requests: ApiRequest list
-          Logs: LogEntry list }
+          Logs: LogEntry list
+          /// Playlist name → Apple Music ID mappings resolved during this sync.
+          /// Callers can persist this to work around listing endpoint inconsistency.
+          ResolvedPlaylistIds: Map<string, string> }
 
     type ApiRuntime =
         { Execute: ApiRequest -> Async<ApiResponse>
@@ -68,4 +71,7 @@ module ApiContracts =
         { Plans: PlaylistPlan list
           AddedCount: int
           RemovedCount: int
-          HadPlaylistFailures: bool }
+          HadPlaylistFailures: bool
+          /// Final name → ID mapping for all resolved playlists (created or found).
+          /// Callers can persist this to avoid relying on the listing endpoint.
+          ResolvedPlaylistIds: Map<string, string> }

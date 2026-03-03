@@ -8,3 +8,4 @@ obj/
 *.suo
 result
 spikes/integration-smoke/config.local.json
+playlist-cache.json

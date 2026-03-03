@@ -275,44 +275,28 @@ module PlaylistReconcile =
                                             plan.AddTracks |> List.map trackIdValue |> String.concat "," ]) ]
                 }
 
-            let! removeCount, removeLogs =
-                async {
-                    if List.isEmpty plan.RemoveTracks then
-                        return 0, []
-                    else
-                        let ids = plan.RemoveTracks |> List.map trackIdValue |> String.concat ","
-                        let path = playlistTracksPath playlistId
+            // Track removal is not yet supported by the Apple Music REST API
+            // (DELETE /v1/me/library/playlists/{id}/tracks returns 401).
+            // Log the stale tracks at Info level so the plan is visible, but
+            // do not attempt the API call or count it as a failure.
+            let removeLogs =
+                if List.isEmpty plan.RemoveTracks then
+                    []
+                else
+                    let ids = plan.RemoveTracks |> List.map trackIdValue |> String.concat ","
 
-                        let request: AC.ApiRequest =
-                            { Service = AC.AppleMusic
-                              Method = "DELETE"
-                              Path = path
-                              Query = [ "ids", ids ]
-                              Headers = appleHeaders config path
-                              Body = None }
-
-                        let! response = runtime.Execute request
-
-                        if response.StatusCode >= 200 && response.StatusCode < 300 then
-                            return plan.RemoveTracks.Length, []
-                        else
-                            return
-                                0,
-                                [ mkLog
-                                      AC.Error
-                                      "PlaylistTrackRemoveFailure"
-                                      $"Failed to remove tracks from playlist '{plan.PlaylistName}'."
-                                      (Map
-                                          [ "playlist", plan.PlaylistName
-                                            "status", string response.StatusCode
-                                            "trackIds", ids ]) ]
-                }
+                    [ mkLog
+                          AC.Info
+                          "PlaylistTrackRemoveSkipped"
+                          $"Skipped removing {plan.RemoveTracks.Length} stale track(s) from playlist '{plan.PlaylistName}' (not supported by Apple Music REST API)."
+                          (Map [ "playlist", plan.PlaylistName; "trackIds", ids ]) ]
 
             let result: AC.ReconcileResult =
                 { Plans = [ plan ]
                   AddedCount = addCount
-                  RemovedCount = removeCount
-                  HadPlaylistFailures = not (List.isEmpty addLogs) || not (List.isEmpty removeLogs) }
+                  RemovedCount = 0
+                  HadPlaylistFailures = not (List.isEmpty addLogs)
+                  ResolvedPlaylistIds = Map.empty }
 
             return result, addLogs @ removeLogs
         }
@@ -324,6 +308,7 @@ module PlaylistReconcile =
         (config: Config.ValidSyncConfig)
         (discovery: AC.DiscoveryResult)
         (runtime: AC.ApiRuntime)
+        (knownPlaylistIds: Map<string, string>)
         : Async<AC.ReconcileResult * AC.LogEntry list> =
         async {
             let today = runtime.UtcNow() |> fun now -> DateOnly.FromDateTime(now.UtcDateTime)
@@ -340,7 +325,13 @@ module PlaylistReconcile =
             // can look up existing playlists by name and use their IDs for all
             // subsequent API calls. Apple Music playlists are addressed by ID,
             // not by name.
-            let! playlistMap =
+            //
+            // The API listing endpoint has severe eventual consistency issues —
+            // newly created playlists may not appear for minutes or may lose
+            // their names. Merge the API listing with the caller-supplied
+            // knownPlaylistIds (which may come from a local cache) so that
+            // playlists created in previous runs are found reliably.
+            let! apiMap =
                 async {
                     let! result = fetchPlaylistMap config runtime
 
@@ -357,6 +348,17 @@ module PlaylistReconcile =
 
                         return Map.empty
                 }
+
+            // API listing wins when both sources have a mapping for the same
+            // name (the API may have a newer ID after user actions).
+            let playlistMap =
+                knownPlaylistIds
+                |> Map.fold (fun acc name id ->
+                    if Map.containsKey name acc then acc
+                    else Map.add name id acc) apiMap
+
+            // Track all resolved IDs so the caller can persist them.
+            let resolvedIds = ResizeArray<string * string>()
 
             for playlist in config.Playlists do
                 // Resolve the playlist ID: look up by name, or create if missing.
@@ -423,6 +425,7 @@ module PlaylistReconcile =
 
                 match resolvedId with
                 | Some pid ->
+                    resolvedIds.Add(playlist.Name, pid)
                     let! applyResult, applyLogs = applyPlan config runtime pid plan
                     logAcc.AddRange applyLogs
                     addedTotal <- addedTotal + applyResult.AddedCount
@@ -437,7 +440,8 @@ module PlaylistReconcile =
                 { Plans = planAcc |> Seq.toList
                   AddedCount = addedTotal
                   RemovedCount = removedTotal
-                  HadPlaylistFailures = hadFailures }
+                  HadPlaylistFailures = hadFailures
+                  ResolvedPlaylistIds = resolvedIds |> Seq.toList |> Map.ofList }
 
             return finalResult, logAcc |> Seq.toList
         }

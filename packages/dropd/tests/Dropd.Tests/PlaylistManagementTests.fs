@@ -165,8 +165,12 @@ let tests =
               Expect.isFalse (addRequest.Body.Value.Contains("track-9001-a")) "catalogId track should not be re-added"
               Expect.stringContains addRequest.Body.Value "track-9001-b" "new track should still be added"
 
-          testCase "DD-048 removes tracks outside rolling window"
+          testCase "DD-048 identifies tracks outside rolling window for removal"
           <| fun _ ->
+              // Track removal is not yet supported by the Apple Music REST API,
+              // so the engine logs stale tracks at Info level instead of issuing
+              // a DELETE request.  Verify the plan identifies the stale track and
+              // that the skip log is emitted.
               let existingBody = fixture "playlist-tracks-existing.json"
 
               let output =
@@ -175,14 +179,21 @@ let tests =
                       (setupWithExtras
                           [ route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 playlistListWithElectronic))
                             route "apple" "GET" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 existingBody))
-                            route "apple" "POST" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 "{}"))
-                            route "apple" "DELETE" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 "{}")) ])
+                            route "apple" "POST" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 "{}")) ])
 
-              let removeRequest =
-                  output.Requests
-                  |> List.find (fun req -> req.Method = "DELETE" && req.Path = "/v1/me/library/playlists/p.existing/tracks")
+              // No DELETE request should be issued.
+              Expect.isFalse
+                  (output.Requests |> List.exists (fun req -> req.Method = "DELETE"))
+                  "no DELETE request should be issued"
 
-              Expect.stringContains (removeRequest.Query |> List.map snd |> String.concat ",") "track-existing-old" "stale track should be removed"
+              // The skip log should mention the stale track.
+              Expect.isTrue
+                  (output.Logs
+                   |> List.exists (fun log ->
+                       log.Code = "PlaylistTrackRemoveSkipped"
+                       && log.Data.ContainsKey "trackIds"
+                       && log.Data.["trackIds"].Contains("track-existing-old")))
+                  "stale track should be logged as skipped"
 
           testCase "DD-049 computes desired state before mutations"
           <| fun _ ->
