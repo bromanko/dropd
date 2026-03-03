@@ -7,7 +7,7 @@ test:
 	dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary
 
 test-dd:
-	dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "DD-"
+	dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter-test-case "DD-"
 
 clean:
 	dotnet clean packages/dropd/dropd.sln
