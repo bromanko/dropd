@@ -75,12 +75,9 @@ The Music User Token is long-lived but can expire. You may need to re-authorize 
 
 | Credential | Where to store | Used for |
 |---|---|---|
-| Team ID | `DROPD_APPLE_TEAM_ID` env var | JWT `iss` claim |
-| Key ID | `DROPD_APPLE_KEY_ID` env var | JWT `kid` header |
-| Private Key (.p8) | File path in `DROPD_APPLE_PRIVATE_KEY_PATH` env var | Signing developer tokens |
-| Music User Token | `DROPD_APPLE_USER_TOKEN` env var | `/v1/me/*` personal endpoints |
+| Bearer Token | `DROPD_APPLE_MUSIC_TOKEN` env var | `Authorization: Bearer` header on all Apple Music requests |
 
-Developer tokens are generated automatically at runtime from the Team ID, Key ID, and private key — no manual token generation step is needed.
+The bearer token is used for both catalog endpoints and personalized `/v1/me/*` endpoints. Token provisioning (generating a developer JWT from the Team ID, Key ID, and private key, and/or obtaining a Music User Token) is handled outside of dropd.
 
 ## Last.fm API
 

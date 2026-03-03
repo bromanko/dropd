@@ -1,5 +1,0 @@
-# Apple Music credentials — see docs/research/credential-setup.md
-export DROPD_APPLE_TEAM_ID=""
-export DROPD_APPLE_KEY_ID=""
-export DROPD_APPLE_PRIVATE_KEY_PATH=""
-export DROPD_APPLE_USER_TOKEN=""

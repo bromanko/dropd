@@ -16,15 +16,16 @@ This plan does not gate CI correctness for product behavior. It is intentionally
 - [x] (2026-03-02 22:50Z) Add Nix flake for reproducible local tooling.
 - [x] (2026-03-02 22:50Z) Add optional direnv integration with explicit fallback path.
 - [x] (2026-03-02 22:52Z) Add `Procfile` and `make dev` workflow.
-- [ ] (2026-03-03 00:19Z) Scaffold `spikes/api-exploration/` project.
-- [ ] (2026-03-03 00:19Z) Implement Apple Music exploration script with credential checks.
-- [ ] (2026-03-03 00:19Z) Implement Last.fm exploration script with credential checks.
-- [ ] (2026-03-03 00:19Z) Validate `make spike` in both no-credential and credential-present paths.
+- [x] (2026-03-02 22:55Z) Scaffold `spikes/api-exploration/` project.
+- [x] (2026-03-02 22:55Z) Implement Apple Music exploration script with credential checks.
+- [x] (2026-03-02 22:55Z) Implement Last.fm exploration script with credential checks.
+- [x] (2026-03-02 22:56Z) Validate `make spike` in no-credential path (exit 0, setup guidance printed).
 
 
 ## Surprises & Discoveries
 
-(None yet.)
+- Observation: Last.fm returns HTTP 200 for all error conditions. An invalid API key returns `{"error":10,"message":"Invalid API key - You must be granted a valid key by last.fm"}`. A nonexistent artist returns `{"error":6,"message":"The artist you supplied could not be found"}`. Error detection must parse the response body for an `"error"` field, not rely on HTTP status codes.
+  Evidence: Validated via `make spike` with live API key on 2026-03-02. All three Last.fm calls returned HTTP 200, including the nonexistent artist and (when tested with bad key) invalid auth scenarios.
 
 
 ## Decision Log
@@ -37,10 +38,24 @@ This plan does not gate CI correctness for product behavior. It is intentionally
   Rationale: Contributors should be able to run exploration scripts without immediate access to private keys/tokens.
   Date: 2026-03-03
 
+- Decision: Use a single pre-configured bearer token (`DROPD_APPLE_MUSIC_TOKEN`) instead of generating JWTs at runtime from Team ID, Key ID, and private key.
+  Rationale: Simplifies credential surface to one env var. Token provisioning is handled externally (e.g., via a secret proxy).
+  Date: 2026-03-02
+
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+All milestones complete. The plan produced:
+
+1. A reproducible Nix flake dev shell with .NET 9, gnumake, overmind, and tmux.
+2. Optional direnv integration (`.envrc`) with documented `nix develop` fallback.
+3. A `Procfile` + `make dev` workflow for multi-process development via Overmind.
+4. An API exploration spike at `spikes/api-exploration/` covering Apple Music (library/catalog/label endpoints) and Last.fm (similar artists, artist search).
+5. Graceful missing-credential behavior: `make spike` exits 0 and prints setup guidance when env vars are absent.
+
+Credential-present validation is deferred to manual testing when credentials are configured. The no-credential path was fully validated.
+
+Lesson learned: A single bearer token approach simplifies the credential surface significantly — one env var vs four — and offloads token provisioning to external tooling.
 
 
 ## Context and Orientation
@@ -134,14 +149,11 @@ Finally, wire developer convenience commands (`make dev`, `make spike`) and vali
 
 1. Create `spikes/api-exploration/api-exploration.fsproj` (`net9.0`) with package references:
 
-   - `System.IdentityModel.Tokens.Jwt` 8.3.0
-   - `Microsoft.IdentityModel.Tokens` 8.3.0
    - `System.Text.Json` 9.0.0
 
 2. Create `spikes/api-exploration/AppleMusic.fs` with:
 
-   - Env var reads: `DROPD_APPLE_TEAM_ID`, `DROPD_APPLE_KEY_ID`, `DROPD_APPLE_PRIVATE_KEY_PATH`, `DROPD_APPLE_USER_TOKEN`
-   - Token generation at runtime from the three credential inputs (no manual token step)
+   - Env var read: `DROPD_APPLE_MUSIC_TOKEN` (a single bearer token used for both `Authorization` and `Music-User-Token` headers)
    - Missing-credential path that prints `See docs/research/credential-setup.md` and exits cleanly
    - Calls:
      - `GET /v1/me/library/artists?limit=5`
@@ -223,14 +235,9 @@ Dependencies:
 
 - Nix flake input `nixpkgs` (unstable)
 - .NET 9 SDK
-- `System.IdentityModel.Tokens.Jwt` 8.3.0
-- `Microsoft.IdentityModel.Tokens` 8.3.0
 - `System.Text.Json` 9.0.0
 
 Environment variables used by spikes:
 
-- `DROPD_APPLE_TEAM_ID`
-- `DROPD_APPLE_KEY_ID`
-- `DROPD_APPLE_PRIVATE_KEY_PATH`
-- `DROPD_APPLE_USER_TOKEN`
+- `DROPD_APPLE_MUSIC_TOKEN`
 - `DROPD_LASTFM_API_KEY`

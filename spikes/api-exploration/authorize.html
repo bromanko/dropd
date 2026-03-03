@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>dropd — Authorize Apple Music</title>
+  <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; }
+    button { font-size: 16px; padding: 10px 20px; cursor: pointer; }
+    pre { background: #f4f4f4; padding: 16px; border-radius: 6px; word-wrap: break-word; white-space: pre-wrap; }
+    textarea { font-family: monospace; width: 100%; }
+    label { display: block; margin-top: 12px; font-weight: bold; }
+    input { font-family: monospace; width: 100%; padding: 4px; box-sizing: border-box; }
+    .error { color: #c00; }
+    .success { color: #080; }
+    .note { color: #666; font-size: 14px; margin-top: 4px; }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+    hr { margin: 24px 0; }
+  </style>
+</head>
+<body>
+  <h1>dropd — Authorize Apple Music</h1>
+
+  <p>This page generates a developer token and obtains a <strong>Music User Token</strong>
+    for accessing your personal Apple Music library. Everything runs in your browser —
+    nothing is sent to any server.</p>
+
+  <label for="team-id">Team ID</label>
+  <input id="team-id" type="text" placeholder="e.g. ABC1234DEF">
+
+  <label for="key-id">Key ID</label>
+  <input id="key-id" type="text" placeholder="e.g. XYZ9876543">
+
+  <label for="private-key">Private Key (.p8 contents)</label>
+  <textarea id="private-key" rows="6" placeholder="-----BEGIN PRIVATE KEY-----
+MIGTAg...
+-----END PRIVATE KEY-----"></textarea>
+  <p class="note">Paste the full contents of your .p8 file. This never leaves your browser.</p>
+
+  <br>
+  <button id="authorize">Generate Token &amp; Authorize</button>
+
+  <div id="status"></div>
+  <pre id="output" style="display:none"></pre>
+
+  <script type="module">
+    // Minimal ES256 JWT generation using the Web Crypto API.
+    // No external dependencies — runs entirely in the browser.
+
+    function base64UrlEncode(data) {
+      const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
+      const binStr = Array.from(bytes, b => String.fromCharCode(b)).join('');
+      return btoa(binStr).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function pemToArrayBuffer(pem) {
+      const b64 = pem
+        .replace(/-----BEGIN PRIVATE KEY-----/, '')
+        .replace(/-----END PRIVATE KEY-----/, '')
+        .replace(/\s/g, '');
+      const bin = atob(b64);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      return buf.buffer;
+    }
+
+    async function generateDeveloperToken(teamId, keyId, privatePem) {
+      const key = await crypto.subtle.importKey(
+        'pkcs8',
+        pemToArrayBuffer(privatePem),
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        false,
+        ['sign']
+      );
+
+      const now = Math.floor(Date.now() / 1000);
+      const header = { alg: 'ES256', kid: keyId };
+      const payload = { iss: teamId, iat: now, exp: now + 43200 }; // 12 hours
+
+      const encodedHeader = base64UrlEncode(JSON.stringify(header));
+      const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+      const signingInput = encodedHeader + '.' + encodedPayload;
+
+      const signature = await crypto.subtle.sign(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        key,
+        new TextEncoder().encode(signingInput)
+      );
+
+      // Web Crypto ECDSA returns raw r||s (64 bytes for P-256), which is
+      // exactly the JWS format — no conversion needed.
+      const encodedSignature = base64UrlEncode(new Uint8Array(signature));
+
+      return signingInput + '.' + encodedSignature;
+    }
+
+    document.getElementById('authorize').addEventListener('click', async () => {
+      const status = document.getElementById('status');
+      const output = document.getElementById('output');
+
+      const teamId = document.getElementById('team-id').value.trim();
+      const keyId = document.getElementById('key-id').value.trim();
+      const privatePem = document.getElementById('private-key').value.trim();
+
+      if (!teamId || !keyId || !privatePem) {
+        status.innerHTML = '<p class="error">Please fill in all three fields.</p>';
+        return;
+      }
+
+      try {
+        status.innerHTML = '<p>Generating developer token...</p>';
+        const devToken = await generateDeveloperToken(teamId, keyId, privatePem);
+
+        status.innerHTML = '<p>Configuring MusicKit...</p>';
+        const music = await MusicKit.configure({
+          developerToken: devToken,
+          app: { name: 'dropd', build: '1.0.0' }
+        });
+
+        status.innerHTML = '<p>Requesting authorization — a sign-in popup should appear...</p>';
+        const userToken = await music.authorize();
+
+        status.innerHTML =
+          '<p class="success">✓ Authorization successful!</p>' +
+          '<p>Set these environment variables:</p>' +
+          '<pre>export DROPD_APPLE_MUSIC_TOKEN="' + devToken.substring(0, 30) + '..."' +
+          '\nexport DROPD_APPLE_USER_TOKEN="' + userToken.substring(0, 30) + '..."</pre>' +
+          '<p><strong>Developer Token:</strong></p>';
+        output.style.display = 'block';
+        output.textContent = 'DROPD_APPLE_MUSIC_TOKEN:\n' + devToken + '\n\nDROPD_APPLE_USER_TOKEN:\n' + userToken;
+      } catch (err) {
+        status.innerHTML = '<p class="error">Failed: ' + err.message + '</p>';
+        console.error(err);
+      }
+    });
+  </script>
+</body>
+</html>
