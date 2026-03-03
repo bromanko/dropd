@@ -1,4 +1,4 @@
-.PHONY: build test test-dd clean dev spike apple-auth
+.PHONY: build test test-dd clean dev spike apple-auth smoke
 
 build:
 	dotnet build packages/dropd/dropd.sln
@@ -21,3 +21,6 @@ spike:
 apple-auth:
 	@echo "Opening http://localhost:8070 — authorize with your Apple ID"
 	@python3 -m http.server 8070 --directory spikes/api-exploration --bind 127.0.0.1
+
+smoke:
+	dotnet run --project spikes/integration-smoke

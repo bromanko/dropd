@@ -7,3 +7,4 @@ obj/
 *.user
 *.suo
 result
+spikes/integration-smoke/config.local.json
