@@ -33,20 +33,22 @@ let tests =
               let script =
                   Sequence [ withStatus 401 "unauthorized"; ok "success" ]
 
-              let state = { Index = 0 }
-              let r1 = serveResponse script state
+              // serveResponse now returns (newState, response); thread the state
+              // through calls to verify sequence advancement (Finding 14).
+              let state0 = { Index = 0 }
+              let state1, r1 = serveResponse script state0
               Expect.equal r1.StatusCode 401 "first call should be 401"
-              let r2 = serveResponse script state
+              let state2, r2 = serveResponse script state1
               Expect.equal r2.StatusCode 200 "second call should be 200"
-              let r3 = serveResponse script state
+              let _, r3 = serveResponse script state2
               Expect.equal r3.StatusCode 200 "third call should repeat last (200)"
 
           testCase "Always script returns same response every time"
           <| fun _ ->
               let script = Always(ok "always")
               let state = { Index = 0 }
-              let r1 = serveResponse script state
-              let r2 = serveResponse script state
+              let _, r1 = serveResponse script state
+              let _, r2 = serveResponse script state
               Expect.equal r1.StatusCode 200 "first"
               Expect.equal r2.StatusCode 200 "second"
               Expect.equal r1.Body "always" "body unchanged"
@@ -148,7 +150,7 @@ let tests =
 
               Expect.isSome authResult "auth error route should match"
 
-              let authResp = serveResponse authResult.Value { Index = 0 }
+              let _, authResp = serveResponse authResult.Value { Index = 0 }
               Expect.equal authResp.StatusCode 200 "Last.fm auth error should be HTTP 200"
               Expect.stringContains authResp.Body "\"error\":10" "should contain error code 10"
 
@@ -164,7 +166,7 @@ let tests =
 
               Expect.isSome missingResult "missing artist route should match"
 
-              let missingResp = serveResponse missingResult.Value { Index = 0 }
+              let _, missingResp = serveResponse missingResult.Value { Index = 0 }
               Expect.equal missingResp.StatusCode 200 "Last.fm missing artist should be HTTP 200"
               Expect.stringContains missingResp.Body "\"error\":6" "should contain error code 6"
 
@@ -185,11 +187,11 @@ let tests =
               Expect.equal req.Body (Some """{"attributes":{"name":"Electronic"}}""") "body"
               Expect.equal req.Service "apple" "service"
 
-          testCase "runSync returns a non-throwing baseline output"
+          testCase "runSync aborts invalid configs with InvalidConfig log"
           <| fun _ ->
               let output = runSync defaults emptySetup
-              Expect.equal output.Requests [] "baseline run should not emit requests"
-              Expect.equal output.Logs [] "baseline run should not emit logs"
-              Expect.equal output.Outcome (Some Success) "baseline run should complete successfully"
+              Expect.equal output.Requests [] "invalid config should not emit requests"
+              Expect.equal output.Outcome (Some(Aborted "InvalidConfig")) "invalid config should abort"
+              Expect.isTrue (output.Logs |> List.exists (fun entry -> entry.Code = "InvalidConfig")) "invalid config log should be present"
 
           ]

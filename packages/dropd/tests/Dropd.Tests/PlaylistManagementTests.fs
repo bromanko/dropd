@@ -1,71 +1,221 @@
 module Dropd.Tests.PlaylistManagementTests
 
 open Expecto
+open Dropd.Core.Types
+open Dropd.Tests.TestHarness
+open Dropd.Tests.TestData
+
+let private seedBody =
+    """
+{
+  "data": [
+    { "id": "657515", "attributes": { "name": "Radiohead" } }
+  ]
+}
+"""
+
+let private onePlaylist =
+    { validConfig with
+        LabelNames = []
+        Playlists = [ { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] } ] }
+
+let private twoPlaylists =
+    { validConfig with
+        LabelNames = []
+        Playlists =
+            [ { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
+              { Name = "Dance Drops"; GenreCriteria = [ "electronic" ] } ] }
+
+let private baseRoutes =
+    [ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 seedBody))
+      route "apple" "GET" "/v1/me/ratings/artists" [] (Always(withStatus 200 seedBody))
+      route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
+      route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 404 "{}"))
+      route "apple" "GET" "/v1/me/library/playlists/Dance%20Drops/tracks" [] (Always(withStatus 404 "{}"))
+      route "apple" "POST" "/v1/me/library/playlists" [] (Always(okFixture "playlist-create-success.json"))
+      route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}"))
+      route "apple" "POST" "/v1/me/library/playlists/Dance%20Drops/tracks" [] (Always(withStatus 200 "{}"))
+      route "apple" "DELETE" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}")) ]
+
+let private setupWithExtras extras = setupWith (baseRoutes @ extras)
 
 [<Tests>]
 let tests =
     testList
         "Playlist Management"
         [
+          testCase "DD-045 creates new playlist on first run"
+          <| fun _ ->
+              let output = runSync onePlaylist (setupWithExtras [])
 
-          // DD-045: When dropd runs for the first time for a given playlist definition,
-          // dropd shall create a new playlist in the user's Apple Music library.
-          // Setup: No existing playlist. Route POST /v1/me/library/playlists → 201 Created.
-          // Assert: Requests contain POST to playlist creation endpoint.
-          ptestCase "DD-045 creates new playlist on first run" <| fun _ -> ()
+              Expect.isTrue
+                  (output.Requests |> List.exists (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists"))
+                  "playlist should be created when missing"
 
-          // DD-046: When dropd has matched new releases to a playlist, dropd shall add
-          // the tracks from those releases to the corresponding Apple Music library playlist.
-          // Setup: Matched tracks for playlist. Route POST /v1/me/library/playlists/{id}/tracks → 200.
-          // Assert: Requests contain track addition call with correct track IDs.
-          ptestCase "DD-046 adds matched tracks to playlist" <| fun _ -> ()
+          testCase "DD-046 adds matched tracks to playlist"
+          <| fun _ ->
+              let output = runSync onePlaylist (setupWithExtras [])
 
-          // DD-047: When dropd updates a playlist, dropd shall not add tracks that are
-          // already present in that playlist.
-          // Setup: Existing playlist contains track T1. New match includes T1 and T2.
-          // Assert: Only T2 is submitted for addition.
-          ptestCase "DD-047 skips tracks already in playlist" <| fun _ -> ()
+              Expect.isTrue
+                  (output.Requests
+                   |> List.exists (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks"))
+                  "track-add request should be emitted"
 
-          // DD-048: When dropd updates a playlist, dropd shall remove tracks whose release
-          // date is older than the configured rolling window duration.
-          // Setup: RollingWindowDays = 14. Playlist has track released 15 days ago.
-          // Assert: Track is removed from playlist.
-          ptestCase "DD-048 removes tracks outside rolling window" <| fun _ -> ()
+          testCase "DD-047 skips tracks already in playlist"
+          <| fun _ ->
+              let existingBody =
+                  """
+{
+  "data": [
+    { "id": "track-9001-a", "attributes": { "releaseDate": "2026-02-20" } }
+  ]
+}
+"""
 
-          // DD-049: When a sync starts, dropd shall compute desired playlist contents
-          // from current source data and configured rules before applying playlist mutations.
-          // Setup: Run two syncs with different source data.
-          // Assert: Second sync recomputes desired state from scratch, not incrementally.
-          ptestCase "DD-049 computes desired state before mutations" <| fun _ -> ()
+              let output =
+                  runSync
+                      onePlaylist
+                      (setupWithExtras [ route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 existingBody)) ])
 
-          // DD-050: When dropd starts a new sync after a prior partial-failure sync,
-          // dropd shall reconcile playlists by recalculating desired additions and removals.
-          // Setup: First sync partially fails. Second sync runs with same data.
-          // Assert: Playlists converge to expected state after second sync.
-          ptestCase "DD-050 reconciles after partial-failure sync" <| fun _ -> ()
+              let addRequest =
+                  output.Requests
+                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
 
-          // DD-051: If dropd fails to create a playlist in the user's Apple Music library,
-          // then dropd shall log an error identifying the playlist.
-          // Setup: Route POST /v1/me/library/playlists → 500.
-          // Assert: Logs contain error with playlist name.
-          ptestCase "DD-051 logs error on playlist creation failure" <| fun _ -> ()
+              Expect.isFalse (addRequest.Body.Value.Contains("track-9001-a")) "existing track should not be re-added"
+              Expect.stringContains addRequest.Body.Value "track-9001-b" "new track should still be added"
 
-          // DD-052: If dropd fails to create a playlist, dropd shall continue processing
-          // remaining playlists.
-          // Setup: Two playlists. First creation fails (500), second succeeds.
-          // Assert: Second playlist is still created.
-          ptestCase "DD-052 continues after playlist creation failure" <| fun _ -> ()
+          testCase "DD-048 removes tracks outside rolling window"
+          <| fun _ ->
+              let existingBody = fixture "playlist-tracks-existing.json"
 
-          // DD-053: If dropd fails to add tracks to a playlist, then dropd shall log an error
-          // identifying the playlist and affected tracks.
-          // Setup: Route track addition → 500.
-          // Assert: Logs contain error with playlist name and track IDs.
-          ptestCase "DD-053 logs error on track addition failure" <| fun _ -> ()
+              let output =
+                  runSync
+                      onePlaylist
+                      (setupWithExtras [ route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 existingBody)) ])
 
-          // DD-054: If dropd fails to add tracks to a playlist, then dropd shall continue
-          // processing remaining playlists.
-          // Setup: Two playlists. Track addition fails for first, succeeds for second.
-          // Assert: Second playlist tracks are still added.
-          ptestCase "DD-054 continues after track addition failure" <| fun _ -> ()
+              let removeRequest =
+                  output.Requests
+                  |> List.find (fun req -> req.Method = "DELETE" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
 
-          ]
+              Expect.stringContains (removeRequest.Query |> List.map snd |> String.concat ",") "track-existing-old" "stale track should be removed"
+
+          testCase "DD-049 computes desired state before mutations"
+          <| fun _ ->
+              let firstAlbums =
+                  """
+{
+  "data": [
+    {
+      "id": "9400",
+      "attributes": {
+        "name": "First",
+        "artistName": "Radiohead",
+        "artistId": "657515",
+        "releaseDate": "2026-02-20",
+        "genreNames": ["Electronic"]
+      },
+      "relationships": { "tracks": { "data": [ { "id": "first-track" } ] } }
+    }
+  ]
+}
+"""
+
+              let secondAlbums =
+                  """
+{
+  "data": [
+    {
+      "id": "9500",
+      "attributes": {
+        "name": "Second",
+        "artistName": "Radiohead",
+        "artistId": "657515",
+        "releaseDate": "2026-02-21",
+        "genreNames": ["Electronic"]
+      },
+      "relationships": { "tracks": { "data": [ { "id": "second-track" } ] } }
+    }
+  ]
+}
+"""
+
+              let first = runSync onePlaylist (setupWithExtras [ route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 200 firstAlbums)) ])
+              let second = runSync onePlaylist (setupWithExtras [ route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 200 secondAlbums)) ])
+
+              let firstAdd = first.Requests |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+              let secondAdd = second.Requests |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+
+              Expect.stringContains firstAdd.Body.Value "first-track" "first run should add first-track"
+              Expect.stringContains secondAdd.Body.Value "second-track" "second run should recalculate and add second-track"
+
+          testCase "DD-050 reconciles after partial-failure sync"
+          <| fun _ ->
+              let failingSetup =
+                  setupWithExtras
+                      [ route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ]
+
+              let succeedingSetup = setupWithExtras []
+
+              let first = runSync onePlaylist failingSetup
+              let second = runSync onePlaylist succeedingSetup
+
+              Expect.equal first.Outcome (Some PartialFailure) "first sync should be partial failure"
+
+              Expect.isTrue
+                  (second.Requests
+                   |> List.exists (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks"))
+                  "second sync should still reconcile playlist mutations"
+
+          testCase "DD-051 logs error on playlist creation failure"
+          <| fun _ ->
+              let output =
+                  runSync
+                      onePlaylist
+                      (setupWithExtras [ route "apple" "POST" "/v1/me/library/playlists" [] (Always(withStatus 500 "{\"error\":\"create failed\"}")) ])
+
+              Expect.isTrue
+                  (output.Logs |> List.exists (fun log -> log.Code = "PlaylistCreateFailure" && log.Data.["playlist"] = "Electronic Drops"))
+                  "create failure should be logged with playlist name"
+
+          testCase "DD-052 continues after playlist creation failure"
+          <| fun _ ->
+              let output =
+                  runSync
+                      twoPlaylists
+                      (setupWithExtras [ route "apple" "POST" "/v1/me/library/playlists" [] (Sequence [ withStatus 500 "{\"error\":\"create failed\"}"; okFixture "playlist-create-success.json" ]) ])
+
+              let createRequests =
+                  output.Requests |> List.filter (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists")
+
+              Expect.equal createRequests.Length 2 "both playlists should attempt creation"
+
+          testCase "DD-053 logs error on track addition failure"
+          <| fun _ ->
+              let output =
+                  runSync
+                      onePlaylist
+                      (setupWithExtras [ route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ])
+
+              Expect.isTrue
+                  (output.Logs
+                   |> List.exists (fun log ->
+                       log.Code = "PlaylistTrackAddFailure"
+                       && log.Data.ContainsKey "playlist"
+                       && log.Data.["playlist"] = "Electronic Drops"
+                       && log.Data.ContainsKey "trackIds"))
+                  "track-add failure should include playlist and track ids"
+
+          testCase "DD-054 continues after track addition failure"
+          <| fun _ ->
+              let output =
+                  runSync
+                      twoPlaylists
+                      (setupWithExtras
+                          [ route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}"))
+                            route "apple" "POST" "/v1/me/library/playlists/Dance%20Drops/tracks" [] (Always(withStatus 200 "{}")) ])
+
+              Expect.isTrue
+                  (output.Requests
+                   |> List.exists (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Dance%20Drops/tracks"))
+                  "other playlists should continue after one add failure"
+        ]

@@ -1,62 +1,187 @@
 module Dropd.Tests.NewReleaseTests
 
 open Expecto
+open Dropd.Core.Types
+open Dropd.Tests.TestHarness
+open Dropd.Tests.TestData
+
+let private singleArtistBody =
+    """
+{
+  "data": [
+    { "id": "657515", "attributes": { "name": "Radiohead" } }
+  ]
+}
+"""
+
+let private playlistConfig =
+    { validConfig with
+        LabelNames = [ "Ninja Tune" ]
+        Playlists = [ { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] } ] }
+
+let private happySetup extraRoutes =
+    setupWith
+        ([ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 singleArtistBody))
+           route "apple" "GET" "/v1/me/ratings/artists" [] (Always(withStatus 200 singleArtistBody))
+           route "apple" "GET" "/v1/catalog/us/search" [ "term", "Ninja Tune"; "types", "record-labels" ] (Always(okFixture "label-search-ninja-tune.json"))
+           route "apple" "GET" "/v1/catalog/us/record-labels/1543411840/latest-releases" [] (Always(okFixture "label-latest-releases-1543411840.json"))
+           route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
+           route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-5765078.json"))
+           route "apple" "GET" "/v1/catalog/us/albums/9002" [] (Always(okFixture "album-9002-no-genres.json"))
+           route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 404 "{}"))
+           route "apple" "POST" "/v1/me/library/playlists" [] (Always(okFixture "playlist-create-success.json"))
+           route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}")) ]
+         @ extraRoutes)
 
 [<Tests>]
 let tests =
     testList
         "New Release Detection"
         [
+          testCase "DD-023 queries new releases from all artist sources"
+          <| fun _ ->
+              let output = runSync playlistConfig (happySetup [])
 
-          // DD-023: When dropd has a combined list of seed artists, similar artists, and
-          // label-sourced artists, dropd shall query the Apple Music catalog for new releases
-          // from each artist.
-          // Setup: Route GET /v1/catalog/us/artists/{id}/albums for seed, similar, and label artists.
-          // Assert: Requests contain album queries for all three source types.
-          ptestCase "DD-023 queries new releases from all artist sources" <| fun _ -> ()
+              Expect.isTrue
+                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/catalog/us/artists/657515/albums"))
+                  "seed artist release query should run"
 
-          // DD-024: When dropd queries for new releases, dropd shall retrieve releases
-          // sorted by release date in descending order.
-          // Setup: Route artist albums endpoint → canned albums in mixed order.
-          //        Use query param sort=-releaseDate.
-          // Assert: Requests include sort=-releaseDate parameter.
-          //         Returned releases are ordered newest-first.
-          ptestCase "DD-024 retrieves releases sorted by release date descending" <| fun _ -> ()
+              Expect.isTrue
+                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/catalog/us/record-labels/1543411840/latest-releases"))
+                  "label release query should run"
 
-          // DD-025: When dropd retrieves new releases, dropd shall include only releases
-          // with a release date within a configurable lookback period.
-          // Setup: LookbackDays = 30. Route albums with one 10-day-old and one 60-day-old release.
-          // Assert: Only the 10-day-old release is included.
-          ptestCase "DD-025 includes only releases within lookback period" <| fun _ -> ()
+          testCase "DD-024 retrieves releases sorted by release date descending"
+          <| fun _ ->
+              let output = runSync playlistConfig (happySetup [])
 
-          // DD-026: When dropd queries for new releases, dropd shall include releases
-          // where the artist appears as a featured or collaborating artist.
-          // Setup: Route artist albums → include a collaboration release.
-          // Assert: Collaboration release appears in the candidate set.
-          ptestCase "DD-026 includes collaboration releases" <| fun _ -> ()
+              Expect.isTrue
+                  (output.Requests
+                   |> List.exists (fun req -> req.Path = "/v1/catalog/us/artists/657515/albums" && req.Query |> List.contains ("sort", "-releaseDate")))
+                  "artist release query should include sort=-releaseDate"
 
-          // DD-027: When dropd aggregates release candidates from multiple discovery sources,
-          // dropd shall deduplicate releases by Apple Music catalog release identifier.
-          // Setup: Same album ID returned for seed artist and label discovery paths.
-          // Assert: Release is processed exactly once (single genre classification pass).
-          ptestCase "DD-027 deduplicates releases by catalog ID" <| fun _ -> ()
+          testCase "DD-025 includes only releases within lookback period"
+          <| fun _ ->
+              let output = runSync playlistConfig (happySetup [])
 
-          // DD-028: When dropd builds the track-add set for a playlist update, dropd shall
-          // deduplicate candidate tracks by Apple Music catalog track identifier.
-          // Setup: Same track ID referenced from two different albums.
-          // Assert: Track appears at most once in the add set.
-          ptestCase "DD-028 deduplicates tracks by catalog track ID" <| fun _ -> ()
+              let addRequest =
+                  output.Requests
+                  |> List.tryFind (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
 
-          // DD-029: If the Apple Music catalog is unavailable when querying for new releases,
-          // then dropd shall log an error.
-          // Setup: Route Apple Music artist albums → 503 for all calls.
-          // Assert: Logs contain error entry for catalog unavailability.
-          ptestCase "DD-029 logs error when Apple Music catalog unavailable" <| fun _ -> ()
+              Expect.isSome addRequest "playlist add request should be present"
+              Expect.stringContains addRequest.Value.Body.Value "track-9001-a" "in-window release tracks should be included"
+              Expect.isFalse (addRequest.Value.Body.Value.Contains("track-9002-a")) "out-of-window release tracks should be excluded"
 
-          // DD-030: If the Apple Music catalog is unavailable when querying for new releases,
-          // then dropd shall abort the current sync.
-          // Setup: Route Apple Music → 503 for all calls.
-          // Assert: ObservedOutput.Outcome = Aborted.
-          ptestCase "DD-030 aborts sync when Apple Music catalog unavailable" <| fun _ -> ()
+          testCase "DD-026 includes collaboration releases"
+          <| fun _ ->
+              let collabBody =
+                  """
+{
+  "data": [
+    {
+      "id": "9101",
+      "attributes": {
+        "name": "Collab",
+        "artistName": "Guest Artist",
+        "artistId": "657515",
+        "releaseDate": "2026-02-25",
+        "genreNames": ["Electronic"]
+      },
+      "relationships": { "tracks": { "data": [ { "id": "collab-track" } ] } }
+    }
+  ]
+}
+"""
 
+              let setup =
+                  happySetup
+                      [ route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 200 collabBody)) ]
+
+              let output = runSync playlistConfig setup
+
+              let addRequest =
+                  output.Requests
+                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+
+              Expect.stringContains addRequest.Body.Value "collab-track" "collaboration track should be included"
+
+          testCase "DD-027 deduplicates releases by catalog ID"
+          <| fun _ ->
+              let output = runSync playlistConfig (happySetup [])
+
+              let addRequest =
+                  output.Requests
+                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+
+              Expect.equal (addRequest.Body.Value.Split("track-9001-a").Length - 1) 1 "duplicate release should contribute tracks once"
+
+          testCase "DD-028 deduplicates tracks by catalog track ID"
+          <| fun _ ->
+              let noLabelConfig =
+                  { playlistConfig with
+                      LabelNames = [] }
+
+              let duplicateTrackBody =
+                  """
+{
+  "data": [
+    {
+      "id": "9001",
+      "attributes": {
+        "name": "Future Echoes",
+        "artistName": "Radiohead",
+        "artistId": "657515",
+        "releaseDate": "2026-02-20",
+        "genreNames": ["Electronic"]
+      },
+      "relationships": {
+        "tracks": {
+          "data": [
+            { "id": "dup-track" },
+            { "id": "dup-track" }
           ]
+        }
+      }
+    }
+  ]
+}
+"""
+
+              let setup =
+                  setupWith
+                      [ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 singleArtistBody))
+                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(withStatus 200 singleArtistBody))
+                        route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 200 duplicateTrackBody))
+                        route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 404 "{}"))
+                        route "apple" "POST" "/v1/me/library/playlists" [] (Always(okFixture "playlist-create-success.json"))
+                        route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}")) ]
+
+              let output = runSync noLabelConfig setup
+
+              let addRequest =
+                  output.Requests
+                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+
+              Expect.equal (addRequest.Body.Value.Split("dup-track").Length - 1) 1 "duplicate track id should appear once"
+
+          testCase "DD-029 logs error when Apple Music catalog unavailable"
+          <| fun _ ->
+              let setup =
+                  happySetup
+                      [ route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "error-500.json" |> fun r -> { r with StatusCode = 503 })) ]
+
+              let output = runSync playlistConfig setup
+
+              Expect.isTrue
+                  (output.Logs
+                   |> List.exists (fun log -> log.Code = "ApiFailure" && log.Data.ContainsKey "status" && log.Data.["status"] = "503"))
+                  "catalog failure should be logged"
+
+          testCase "DD-030 aborts sync when Apple Music catalog unavailable"
+          <| fun _ ->
+              let setup =
+                  happySetup
+                      [ route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "error-500.json" |> fun r -> { r with StatusCode = 503 })) ]
+
+              let output = runSync playlistConfig setup
+              Expect.equal output.Outcome (Some(Aborted "CatalogUnavailable")) "sync should abort on catalog outage"
+        ]

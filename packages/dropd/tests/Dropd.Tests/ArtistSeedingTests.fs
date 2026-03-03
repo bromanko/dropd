@@ -1,29 +1,68 @@
 module Dropd.Tests.ArtistSeedingTests
 
 open Expecto
+open Dropd.Tests.TestHarness
+open Dropd.Tests.TestData
+
+let private baseConfig =
+    { validConfig with
+        LabelNames = []
+        Playlists = [] }
 
 [<Tests>]
 let tests =
     testList
         "Artist Seeding"
         [
+          testCase "DD-001 retrieves library artists during sync"
+          <| fun _ ->
+              let setup =
+                  setupWith
+                      [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
+                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json")) ]
 
-          // DD-001: When dropd performs a sync, dropd shall retrieve the list of
-          // artists from the user's Apple Music library.
-          // Setup: Route GET /v1/me/library/artists → canned artist list.
-          // Assert: ObservedOutput.Requests contains GET /v1/me/library/artists.
-          ptestCase "DD-001 retrieves library artists during sync" <| fun _ -> ()
+              let output = runSync baseConfig setup
 
-          // DD-002: When dropd performs a sync, dropd shall retrieve the list of
-          // favorited artists from the user's Apple Music library.
-          // Setup: Route GET /v1/me/ratings/artists → canned favorites list.
-          // Assert: ObservedOutput.Requests contains GET /v1/me/ratings/artists.
-          ptestCase "DD-002 retrieves favorited artists during sync" <| fun _ -> ()
+              Expect.isTrue
+                  (output.Requests |> List.exists (fun req -> req.Method = "GET" && req.Path = "/v1/me/library/artists"))
+                  "sync should request library artists"
 
-          // DD-003: When dropd identifies library artists and favorited artists,
-          // dropd shall merge them into a deduplicated seed artist list.
-          // Setup: Route library artists with artist A, favorites with artist A.
-          // Assert: Seed list contains artist A exactly once.
-          ptestCase "DD-003 deduplicates library and favorited artists" <| fun _ -> ()
+          testCase "DD-002 retrieves favorited artists during sync"
+          <| fun _ ->
+              let setup =
+                  setupWith
+                      [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
+                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json")) ]
 
-          ]
+              let output = runSync baseConfig setup
+
+              Expect.isTrue
+                  (output.Requests |> List.exists (fun req -> req.Method = "GET" && req.Path = "/v1/me/ratings/artists"))
+                  "sync should request favorited artists"
+
+          testCase "DD-003 deduplicates library and favorited artists"
+          <| fun _ ->
+              let dedupFavorites =
+                  """
+{
+  "data": [
+    { "id": "657515", "attributes": { "name": "Radiohead" } }
+  ]
+}
+"""
+
+              let setup =
+                  setupWith
+                      [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
+                        route "apple" "GET" "/v1/me/ratings/artists" [] (Always(withStatus 200 dedupFavorites))
+                        route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
+                        route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-5765078.json")) ]
+
+              let output = runSync baseConfig setup
+
+              let radioheadFetches =
+                  output.Requests
+                  |> List.filter (fun req -> req.Method = "GET" && req.Path = "/v1/catalog/us/artists/657515/albums")
+
+              Expect.equal radioheadFetches.Length 1 "deduplicated seed artist should be queried once"
+        ]

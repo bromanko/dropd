@@ -1,46 +1,84 @@
 module Dropd.Tests.ObservabilityTests
 
 open Expecto
+open Dropd.Tests.TestHarness
+open Dropd.Tests.TestData
+
+let private config =
+    { validConfig with
+        LabelNames = []
+        Playlists = [ { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] } ] }
+
+let private baseSetup extras =
+    setupWith
+        ([ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
+           route "apple" "GET" "/v1/me/ratings/artists" [] (Always(okFixture "favorited-artists.json"))
+           route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
+           route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-5765078.json"))
+           route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 (fixture "playlist-tracks-existing.json")))
+           route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}"))
+           route "apple" "DELETE" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}")) ]
+         @ extras)
 
 [<Tests>]
 let tests =
     testList
         "Observability"
         [
+          testCase "DD-074 logs sync start and completion with track counts"
+          <| fun _ ->
+              let output = runSync config (baseSetup [])
 
-          // DD-074: dropd shall log the start and completion of each sync, including the
-          // number of new tracks added and tracks removed across all playlists.
-          // Setup: Run a sync that adds 5 tracks and removes 2.
-          // Assert: Logs contain start entry, completion entry with tracks_added=5, tracks_removed=2.
-          ptestCase "DD-074 logs sync start and completion with track counts" <| fun _ -> ()
+              Expect.isTrue (output.Logs |> List.exists (fun log -> log.Code = "SyncStarted")) "start log expected"
 
-          // DD-075: dropd shall log each API call failure with the endpoint, HTTP status code,
-          // and error message.
-          // Setup: Route Apple Music → 500 for one endpoint.
-          // Assert: Logs contain entry with endpoint path, status code 500, and error message.
-          ptestCase "DD-075 logs API failures with endpoint and status" <| fun _ -> ()
+              let completion = output.Logs |> List.tryFind (fun log -> log.Code = "SyncCompleted")
+              Expect.isSome completion "completion log expected"
+              Expect.isTrue (completion.Value.Data.ContainsKey "tracks_added") "completion log should include tracks_added"
+              Expect.isTrue (completion.Value.Data.ContainsKey "tracks_removed") "completion log should include tracks_removed"
 
-          // DD-076: dropd shall retain application logs for 7 days.
-          // Setup: Verify log retention configuration.
-          // Assert: Retention window is set to 7 days in config or log framework setup.
+          testCase "DD-075 logs API failures with endpoint and status"
+          <| fun _ ->
+              let output =
+                  runSync
+                      config
+                      (baseSetup [ route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 500 (fixture "error-500.json"))) ])
+
+              Expect.isTrue
+                  (output.Logs
+                   |> List.exists (fun log ->
+                       log.Code = "ApiFailure"
+                       && log.Data.ContainsKey "endpoint"
+                       && log.Data.ContainsKey "status"
+                       && log.Data.["status"] = "500"
+                       && log.Data.ContainsKey "message"))
+                  "api failure log should include endpoint, status, and message"
+
           ptestCase "DD-076 retains logs for 7 days" <| fun _ -> ()
 
-          // DD-077: dropd shall automatically delete log entries older than the configured
-          // retention window.
-          // Setup: Simulate log entries older than 7 days.
-          // Assert: Pruning removes entries older than retention window.
           ptestCase "DD-077 deletes logs older than retention window" <| fun _ -> ()
 
-          // DD-078: dropd shall log each skipped sync occurrence, including whether the skip
-          // reason was overlap with an in-progress sync or missed schedule.
-          // Setup: Trigger both skip scenarios (AlreadyRunning, MissedWhileUnavailable).
-          // Assert: Logs contain reason-coded entries for each skip.
           ptestCase "DD-078 logs skipped sync with reason code" <| fun _ -> ()
 
-          // DD-079: dropd shall log a sync outcome status of success, partial_failure, or
-          // aborted for each sync run.
-          // Setup: Run three syncs: one successful, one with playlist failures, one aborted.
-          // Assert: Logs contain outcome entries matching Success, PartialFailure, Aborted.
-          ptestCase "DD-079 logs sync outcome status" <| fun _ -> ()
+          testCase "DD-079 logs sync outcome status"
+          <| fun _ ->
+              let success = runSync config (baseSetup [])
 
-          ]
+              let partial =
+                  runSync
+                      config
+                      (baseSetup [ route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ])
+
+              let aborted =
+                  runSync
+                      config
+                      (baseSetup [ route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 503 (fixture "error-500.json"))) ])
+
+              let outcomeText output =
+                  output.Logs
+                  |> List.tryFind (fun log -> log.Code = "SyncOutcome")
+                  |> Option.bind (fun log -> log.Data.TryFind "outcome")
+
+              Expect.equal (outcomeText success) (Some "success") "success run should log success outcome"
+              Expect.equal (outcomeText partial) (Some "partial_failure") "partial run should log partial_failure"
+              Expect.equal (outcomeText aborted) (Some "aborted") "aborted run should log aborted"
+        ]
