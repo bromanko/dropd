@@ -78,16 +78,19 @@ already accepts, then calls `SyncEngine.runSync` and pretty-prints the results.
   been fixed. The fix uses `include=catalog` on the library artists endpoint to extract
   catalog IDs, and batches them into the `ids` parameter on the ratings endpoint.
 
-- **Additional finding from live run:** The `latest-releases` relationship on record labels
-  returns 400 with "No relationship found matching 'latest-releases'" for some labels
-  (e.g. Ninja Tune label ID `1543990853`). The engine's label-latest-releases path
-  (`/v1/catalog/us/record-labels/{id}/latest-releases`) may need to use the `views`
-  parameter instead (e.g. `?views=latest-releases`). This is a separate issue from
-  BUG-001.
+- **Fixed: Label releases used wrong endpoint format.** The engine used
+  `/v1/catalog/us/record-labels/{id}/latest-releases` (path segment) but the real API
+  uses `/v1/catalog/us/record-labels/{id}?views=latest-releases` (query parameter).
+  The response structure also differs — releases are nested under
+  `views.latest-releases.data` instead of `data`. Both the research doc and the
+  api-exploration spike already documented the correct format. Fixed by updating
+  `fetchLabelReleases` and adding `parseLabelViewReleases`.
 
-- **Additional finding from live run:** Playlist creation returns 400. The playlist name
-  URL encoding or the POST body format may not match what the real Apple Music API expects.
-  This is a separate issue unrelated to BUG-001.
+- **Fixed: Playlist creation and track-add used wrong body formats.** Playlist creation
+  sent `{"name":"..."}` but the Apple Music API expects
+  `{"attributes":{"name":"..."}}`. Track-add sent `{"trackIds":["..."]}` but the API
+  expects `{"data":[{"id":"...","type":"songs"}]}`. Both fixed in
+  `PlaylistReconcile.fs`.
 
 
 ## Decision Log
@@ -150,9 +153,22 @@ The spike is fully implemented and working. All acceptance criteria are met:
    library or test files were modified.
 6. `config.local.json` is in `.gitignore`.
 
-The end-to-end run with current credentials produced an `AuthFailure` abort (401 on
-`/v1/me/library/artists`), confirming the Apple Music tokens need refreshing. This is
-expected behavior — the spike correctly detects and reports the auth failure.
+The initial end-to-end run produced an `AuthFailure` abort, which led to token refresh.
+Subsequent runs surfaced four bugs in the core engine that were invisible to the
+fixture-based test suite:
+
+1. **BUG-001:** `fetchLibraryArtists` returned library-scoped IDs (`r.xxx`) and
+   `fetchFavoritedArtists` didn't pass `ids` to the ratings endpoint. Fixed by using
+   `include=catalog` and batching IDs.
+2. **Label releases endpoint:** used a path segment instead of the `views` query parameter.
+   Fixed with `parseLabelViewReleases`.
+3. **Playlist creation body:** missing `attributes` wrapper. Fixed.
+4. **Track-add body:** used `trackIds` array instead of `data` array with typed objects.
+   Fixed.
+
+After all fixes, `make smoke` completes with `✓ Outcome: success`, 1 track added,
+47 API requests, no errors. The only warning is "Warp Records" not resolving (a config
+issue — the label may be listed under a different name in Apple Music's catalog).
 
 Total implementation time was straightforward. The only deviations from the plan were
 minor: pulling `config.example.json` creation forward, and fixing an F# interpolated
