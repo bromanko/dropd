@@ -320,6 +320,10 @@ module PlaylistReconcile =
 
                             if tracksResponse.StatusCode >= 200 && tracksResponse.StatusCode < 300 then
                                 return Some existingId, parseExistingTracks tracksResponse.Body, false
+                            elif tracksResponse.StatusCode = 404 then
+                                // Apple Music returns 404 "No related resources" for
+                                // empty playlists.  Treat as zero existing tracks.
+                                return Some existingId, [], false
                             else
                                 logAcc.Add(
                                     mkLog
