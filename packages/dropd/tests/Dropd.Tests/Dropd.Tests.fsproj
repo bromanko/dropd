@@ -7,7 +7,11 @@
 
   <ItemGroup>
     <Compile Include="TestHarness.fs" />
+    <Compile Include="TestData.fs" />
     <Compile Include="HarnessTests.fs" />
+    <Compile Include="NormalizationUnitTests.fs" />
+    <Compile Include="SyncEngineUnitTests.fs" />
+    <Compile Include="PlaylistReconcileUnitTests.fs" />
     <Compile Include="RequirementCatalog.fs" />
     <Compile Include="ArtistSeedingTests.fs" />
     <Compile Include="LabelDiscoveryTests.fs" />
