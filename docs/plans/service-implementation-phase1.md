@@ -32,6 +32,12 @@ and seeing them active and passing.
 - Observation: `TestHarness.runSync` was a fixed stub and did not execute any sync logic.
   Evidence: prior to implementation, `packages/dropd/tests/Dropd.Tests/TestHarness.fs` returned `{ Requests = []; Logs = []; Outcome = Some Success }`.
 
+- **Bug: `fetchFavoritedArtists` does not pass `ids` to `/v1/me/ratings/artists`.**
+  Discovered during integration smoke spike (`make smoke`). The real Apple Music API
+  returns 400 ("No ids supplied on the request") and the sync aborts. All existing tests
+  pass because the test harness returns canned responses without validating query params.
+  See BUG-001 in the Known Bugs section below for full analysis and remediation plan.
+
 - Observation: Expecto `--filter` did not match DD-style names in this project configuration.
   Evidence: `nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "DD-001"` returned 0 tests run, while full summary listed DD tests as active and passing.
 
@@ -68,6 +74,60 @@ and seeing them active and passing.
 - Decision: playlist reconciliation treats create/list/add/remove failures as partial failures and continues to remaining playlists.
   Rationale: this satisfies DD-050..DD-054 while keeping sync runs recoverable and idempotent.
   Date: 2026-03-03
+
+## Known Bugs
+
+### BUG-001: `fetchFavoritedArtists` calls `/v1/me/ratings/artists` without required `ids` parameter
+
+**Discovered:** 2026-03-03, integration smoke spike (`docs/plans/integration-smoke-spike.md`).
+
+**Symptom:** The real Apple Music API returns HTTP 400, error code `40005`
+("No ids supplied on the request"). The engine treats this as a fatal error and aborts
+with `FavoritedArtistsFailed`. The test suite does not catch this because the test harness
+returns canned 200 responses regardless of query parameters.
+
+**Root cause:** `SyncEngine.fetchFavoritedArtists` calls
+`GET /v1/me/ratings/artists` with no `ids` query parameter. The Apple Music ratings
+endpoints require an explicit `ids` parameter listing the catalog resource IDs to check.
+The api-exploration spike (`spikes/api-exploration/AppleMusic.fs`) already demonstrates the
+correct pattern: `GET /v1/me/ratings/songs?ids=203709340`.
+
+**Additional concern — library IDs vs catalog IDs:** The library artists returned by
+`GET /v1/me/library/artists` may use library-scoped IDs (e.g. `r.xxx` format) rather than
+catalog artist IDs. The ratings endpoint expects catalog IDs. If library artists do carry
+library-scoped IDs, then `fetchFavoritedArtists` cannot simply forward them — it must
+first resolve them to catalog IDs (e.g. via the `catalog` relationship on library artist
+resources) or use a different approach entirely.
+
+**Impact:** DD-002 ("retrieve the list of favorited artists") passes in tests but fails
+against the real Apple Music API. The entire sync aborts before reaching label discovery,
+release retrieval, or playlist reconciliation.
+
+**Required fix (scope TBD):**
+
+1. **Investigate the ID format:** Run `GET /v1/me/library/artists?limit=5` against the
+   real API and inspect whether the returned `id` values are catalog IDs (numeric strings
+   like `"657515"`) or library-scoped IDs (like `"r.abcdef"`). If they are library-scoped,
+   check whether the response includes a `relationships.catalog` link or attribute that
+   provides the catalog ID.
+
+2. **Fix `fetchFavoritedArtists`:** Depending on finding (1):
+   - If library artists carry catalog IDs directly: change `fetchFavoritedArtists` to
+     accept the library artist IDs, batch them into the `ids` query parameter
+     (comma-separated), and handle the Apple Music batch-size limits (max 25–100 IDs per
+     request depending on endpoint).
+   - If library artists carry library-scoped IDs: either resolve to catalog IDs first
+     (additional API call), or replace the ratings approach entirely with the library
+     `favorite` flag if the API supports filtering by favorited status directly.
+
+3. **Update test fixtures and harness:** The test harness route for
+   `/v1/me/ratings/artists` should validate that `ids` is present in the query parameters.
+   Update fixtures and DD-002 test assertions accordingly.
+
+4. **Re-validate with integration smoke:** After the fix, `make smoke` should proceed past
+   the favorited-artists step and continue into label discovery and release retrieval.
+
+**Status:** Open — not yet fixed.
 
 ## Outcomes & Retrospective
 

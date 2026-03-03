@@ -62,6 +62,20 @@ already accepts, then calls `SyncEngine.runSync` and pretty-prints the results.
   expression to a `let` and interpolate the binding instead. This tripped compilation in
   Step 12a.
 
+- **Bug found: `fetchFavoritedArtists` calls `/v1/me/ratings/artists` without an `ids`
+  query parameter.** The real Apple Music API requires `ids` — you cannot list all ratings
+  without specifying which resource IDs to check. The API returns HTTP 400 with error code
+  `40005` ("No ids supplied on the request"). The engine treats this as a fatal error and
+  aborts with `FavoritedArtistsFailed`. The existing test suite never caught this because
+  the test harness uses fake HTTP fixtures that return canned 200 responses regardless of
+  query parameters. The api-exploration spike (`spikes/api-exploration/AppleMusic.fs`)
+  already demonstrates the correct pattern: `GET /v1/me/ratings/songs?ids=203709340`.
+  The fix requires `fetchFavoritedArtists` to accept the library artist IDs from step 1
+  and batch them into the `ids` query parameter, but there is also a library-ID-to-catalog-ID
+  mapping concern — library artists from `/v1/me/library/artists` may return library-scoped
+  IDs (e.g. `r.xxx`) rather than catalog IDs, and the ratings endpoint expects catalog IDs.
+  This is tracked as a Phase 1 bug fix in `docs/plans/service-implementation-phase1.md`.
+
 
 ## Decision Log
 
