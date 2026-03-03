@@ -10,7 +10,9 @@ let private baseUrlFor = function
     | LastFm     -> "https://ws.audioscrobbler.com"
 
 let create () : ApiRuntime =
-    let client = new HttpClient()
+    let handler = new HttpClientHandler()
+    handler.AutomaticDecompression <- System.Net.DecompressionMethods.All
+    let client = new HttpClient(handler)
 
     let execute (request: ApiRequest) = async {
         let baseUrl = baseUrlFor request.Service

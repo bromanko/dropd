@@ -15,9 +15,10 @@ let private baseSetup extras =
            route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
            route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
            route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-5765078.json"))
-           route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 (fixture "playlist-tracks-existing.json")))
-           route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}"))
-           route "apple" "DELETE" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}")) ]
+           route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 """{ "data": [{ "id": "p.elecDrops", "type": "library-playlists", "attributes": { "name": "Electronic Drops" } }] }"""))
+           route "apple" "GET" "/v1/me/library/playlists/p.elecDrops/tracks" [] (Always(withStatus 200 (fixture "playlist-tracks-existing.json")))
+           route "apple" "POST" "/v1/me/library/playlists/p.elecDrops/tracks" [] (Always(withStatus 200 "{}"))
+           route "apple" "DELETE" "/v1/me/library/playlists/p.elecDrops/tracks" [] (Always(withStatus 200 "{}")) ]
          @ extras)
 
 [<Tests>]
@@ -66,7 +67,7 @@ let tests =
               let partial =
                   runSync
                       config
-                      (baseSetup [ route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ])
+                      (baseSetup [ route "apple" "POST" "/v1/me/library/playlists/p.elecDrops/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ])
 
               let aborted =
                   runSync

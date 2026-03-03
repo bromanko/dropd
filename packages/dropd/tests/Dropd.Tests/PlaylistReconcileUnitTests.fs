@@ -172,8 +172,12 @@ let tests =
                     {"id":"another-good","attributes":{}}
                   ]}"""
 
+              let playlistListBody =
+                  """{"data":[{"id":"p.existing","type":"library-playlists","attributes":{"name":"Electronic Drops"}}]}"""
+
               let handler (request: AC.ApiRequest) : AC.ApiResponse =
                   match request.Method, request.Path with
+                  | "GET", "/v1/me/library/playlists" -> Helpers.response 200 playlistListBody
                   | "GET", _ when request.Path.EndsWith("/tracks") -> Helpers.response 200 tracksBody
                   | "POST", _ when request.Path.EndsWith("/tracks") -> Helpers.response 200 "{}"
                   | "DELETE", _ -> Helpers.response 200 "{}"
@@ -203,14 +207,12 @@ let tests =
 
               let handler (request: AC.ApiRequest) : AC.ApiResponse =
                   match request.Method, request.Path with
-                  | "GET", "/v1/me/library/playlists/One/tracks" -> Helpers.response 404 "{}"
-                  | "GET", "/v1/me/library/playlists/Two/tracks" -> Helpers.response 404 "{}"
+                  | "GET", "/v1/me/library/playlists" -> Helpers.response 200 """{"data":[]}"""
                   | "POST", "/v1/me/library/playlists" when request.Body.IsSome && request.Body.Value.Contains("\"One\"") ->
                       Helpers.response 500 "{\"error\":\"create failed\"}"
                   | "POST", "/v1/me/library/playlists" when request.Body.IsSome && request.Body.Value.Contains("\"Two\"") ->
-                      Helpers.response 201 "{\"id\":\"pl-two\"}"
-                  | "POST", "/v1/me/library/playlists/One/tracks"
-                  | "POST", "/v1/me/library/playlists/Two/tracks" -> Helpers.response 200 "{}"
+                      Helpers.response 201 """{"data":[{"id":"p.two","type":"library-playlists","attributes":{"name":"Two"}}]}"""
+                  | "POST", _ when request.Path.EndsWith("/tracks") -> Helpers.response 200 "{}"
                   | _ -> Helpers.response 200 "{}"
 
               let runtime, state = Helpers.runtimeFrom handler

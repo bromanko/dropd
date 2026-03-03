@@ -43,11 +43,9 @@ let private baseSetup extraRoutes =
         ([ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 seedLibraryBody))
            route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515" ] (Always(withStatus 200 seedRatingBody))
            route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
-           route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 404 "{}"))
-           route "apple" "GET" "/v1/me/library/playlists/Dance%20Drops/tracks" [] (Always(withStatus 404 "{}"))
+           route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 """{ "data": [] }"""))
            route "apple" "POST" "/v1/me/library/playlists" [] (Always(okFixture "playlist-create-success.json"))
-           route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}"))
-           route "apple" "POST" "/v1/me/library/playlists/Dance%20Drops/tracks" [] (Always(withStatus 200 "{}")) ]
+           route "apple" "POST" "/v1/me/library/playlists/p.playlistCreated/tracks" [] (Always(withStatus 200 "{}")) ]
          @ extraRoutes)
 
 [<Tests>]
@@ -85,7 +83,7 @@ let tests =
 
               let addRequest =
                   output.Requests
-                  |> List.find (fun req -> req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks" && req.Method = "POST")
+                  |> List.find (fun req -> req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks" && req.Method = "POST")
 
               Expect.stringContains addRequest.Body.Value "track-9001-a" "track should be assigned after reading genre metadata"
 
@@ -117,7 +115,7 @@ let tests =
 
               let addRequest =
                   output.Requests
-                  |> List.find (fun req -> req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks" && req.Method = "POST")
+                  |> List.find (fun req -> req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks" && req.Method = "POST")
 
               Expect.stringContains addRequest.Body.Value "space-track" "normalized genre should match playlist criteria"
 
@@ -130,11 +128,11 @@ let tests =
                       (baseSetup [])
 
               Expect.isTrue
-                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks" && req.Method = "POST"))
+                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks" && req.Method = "POST"))
                   "electronic playlist should receive tracks"
 
               Expect.isTrue
-                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/me/library/playlists/Dance%20Drops/tracks" && req.Method = "POST"))
+                  (output.Requests |> List.exists (fun req -> req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks" && req.Method = "POST"))
                   "second matching playlist should also receive tracks"
 
           testCase "DD-034 logs warning for releases without genre metadata"
@@ -197,7 +195,7 @@ let tests =
 
               let maybeAdd =
                   output.Requests
-                  |> List.tryFind (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+                  |> List.tryFind (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks")
 
               match maybeAdd with
               | None -> ()

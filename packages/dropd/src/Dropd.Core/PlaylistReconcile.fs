@@ -45,15 +45,81 @@ module PlaylistReconcile =
                     { Id = withTrackId id
                       ReleaseDate = releaseDate })
 
-    let private playlistPath (playlistName: string) =
-        let escaped = Uri.EscapeDataString playlistName
-        $"/v1/me/library/playlists/{escaped}/tracks"
+    let private playlistTracksPath (playlistId: string) =
+        $"/v1/me/library/playlists/{playlistId}/tracks"
+
+    /// Parse the library playlists listing and return a name → ID map.
+    let private parsePlaylistMap (body: string) : Map<string, string> =
+        use document = JsonDocument.Parse(body)
+
+        let items =
+            match tryGetProperty "data" document.RootElement with
+            | Some value when value.ValueKind = JsonValueKind.Array -> value.EnumerateArray() |> Seq.toList
+            | _ -> []
+
+        items
+        |> List.choose (fun item ->
+            match tryGetString "id" item with
+            | None -> None
+            | Some id ->
+                let name =
+                    item
+                    |> tryGetProperty "attributes"
+                    |> Option.bind (tryGetString "name")
+
+                match name with
+                | Some n -> Some(n, id)
+                | None -> None)
+        // Use the first occurrence for each name (in case of duplicates).
+        |> List.rev
+        |> Map.ofList
+
+    /// Parse the playlist ID from a create-playlist response.
+    let private parseCreatedPlaylistId (body: string) : string option =
+        use document = JsonDocument.Parse(body)
+
+        let dataElement = tryGetProperty "data" document.RootElement
+
+        // The response may be a single object or an array with one element.
+        let firstItem =
+            match dataElement with
+            | Some value when value.ValueKind = JsonValueKind.Array ->
+                value.EnumerateArray() |> Seq.tryHead
+            | Some value when value.ValueKind = JsonValueKind.Object ->
+                Some value
+            | _ -> None
+
+        firstItem |> Option.bind (tryGetString "id")
 
     // Finding 12: delegate to the single, path-aware implementation in JsonHelpers
     // so Music-User-Token is included only for /v1/me paths, consistently with
     // SyncEngine.
     let private appleHeaders (config: Config.ValidSyncConfig) (path: string) =
         JsonHelpers.appleHeaders config path
+
+    /// Fetch all library playlists and return a name → ID map.
+    let private fetchPlaylistMap
+        (config: Config.ValidSyncConfig)
+        (runtime: AC.ApiRuntime)
+        : Async<Result<Map<string, string>, AC.ApiResponse>> =
+        async {
+            let path = "/v1/me/library/playlists"
+
+            let request: AC.ApiRequest =
+                { Service = AC.AppleMusic
+                  Method = "GET"
+                  Path = path
+                  Query = []
+                  Headers = appleHeaders config path
+                  Body = None }
+
+            let! response = runtime.Execute request
+
+            if response.StatusCode >= 200 && response.StatusCode < 300 then
+                return Ok(parsePlaylistMap response.Body)
+            else
+                return Error response
+        }
 
     let computePlan
         (today: DateOnly)
@@ -97,6 +163,7 @@ module PlaylistReconcile =
     let applyPlan
         (config: Config.ValidSyncConfig)
         (runtime: AC.ApiRuntime)
+        (playlistId: string)
         (plan: AC.PlaylistPlan)
         : Async<AC.ReconcileResult * AC.LogEntry list> =
         async {
@@ -121,7 +188,7 @@ module PlaylistReconcile =
                         node["data"] <- arr
                         let body = node.ToJsonString()
 
-                        let path = playlistPath plan.PlaylistName
+                        let path = playlistTracksPath playlistId
 
                         let request: AC.ApiRequest =
                             { Service = AC.AppleMusic
@@ -155,7 +222,7 @@ module PlaylistReconcile =
                         return 0, []
                     else
                         let ids = plan.RemoveTracks |> List.map trackIdValue |> String.concat ","
-                        let path = playlistPath plan.PlaylistName
+                        let path = playlistTracksPath playlistId
 
                         let request: AC.ApiRequest =
                             { Service = AC.AppleMusic
@@ -210,26 +277,62 @@ module PlaylistReconcile =
             let mutable removedTotal = 0
             let mutable hadFailures = false
 
+            // Fetch all library playlists once and build a name → ID map so we
+            // can look up existing playlists by name and use their IDs for all
+            // subsequent API calls. Apple Music playlists are addressed by ID,
+            // not by name.
+            let! playlistMap =
+                async {
+                    let! result = fetchPlaylistMap config runtime
+
+                    match result with
+                    | Ok m -> return m
+                    | Error response ->
+                        logAcc.Add(
+                            mkLog
+                                AC.Error
+                                "PlaylistListFailure"
+                                "Failed to list library playlists."
+                                (Map [ "status", string response.StatusCode ])
+                        )
+
+                        return Map.empty
+                }
+
             for playlist in config.Playlists do
-                let getPath = playlistPath playlist.Name
-
-                let getRequest: AC.ApiRequest =
-                    { Service = AC.AppleMusic
-                      Method = "GET"
-                      Path = getPath
-                      Query = []
-                      Headers = appleHeaders config getPath
-                      Body = None }
-
-                let! existingResponse = runtime.Execute getRequest
-
-                // Resolve existing tracks; if 404, attempt to create the playlist.
-                // A nested async { } keeps all awaits properly structured.
-                let! existingTracks, createFailure =
+                // Resolve the playlist ID: look up by name, or create if missing.
+                let! resolvedId, existingTracks, createFailure =
                     async {
-                        if existingResponse.StatusCode = 404 then
-                            // Finding 4 / 11: JsonObject prevents JSON injection from
-                            // playlist names containing quotes or backslashes.
+                        match playlistMap |> Map.tryFind playlist.Name with
+                        | Some existingId ->
+                            // Playlist exists — fetch its current tracks.
+                            let tracksPath = playlistTracksPath existingId
+
+                            let getRequest: AC.ApiRequest =
+                                { Service = AC.AppleMusic
+                                  Method = "GET"
+                                  Path = tracksPath
+                                  Query = []
+                                  Headers = appleHeaders config tracksPath
+                                  Body = None }
+
+                            let! tracksResponse = runtime.Execute getRequest
+
+                            if tracksResponse.StatusCode >= 200 && tracksResponse.StatusCode < 300 then
+                                return Some existingId, parseExistingTracks tracksResponse.Body, false
+                            else
+                                logAcc.Add(
+                                    mkLog
+                                        AC.Error
+                                        "PlaylistTrackListFailure"
+                                        $"Failed to read playlist '{playlist.Name}'."
+                                        (Map [ "playlist", playlist.Name; "status", string tracksResponse.StatusCode ])
+                                )
+
+                                return Some existingId, [], true
+
+                        | None ->
+                            // Playlist does not exist — create it.
                             // Apple Music API requires: {"attributes":{"name":"..."}}
                             let attrs = JsonObject()
                             attrs["name"] <- JsonValue.Create(playlist.Name)
@@ -250,7 +353,8 @@ module PlaylistReconcile =
                             let! createResponse = runtime.Execute createRequest
 
                             if createResponse.StatusCode >= 200 && createResponse.StatusCode < 300 then
-                                return [], false
+                                let newId = parseCreatedPlaylistId createResponse.Body
+                                return newId, [], false
                             else
                                 logAcc.Add(
                                     mkLog
@@ -262,31 +366,23 @@ module PlaylistReconcile =
                                               "status", string createResponse.StatusCode ])
                                 )
 
-                                return [], true
-
-                        elif existingResponse.StatusCode >= 200 && existingResponse.StatusCode < 300 then
-                            return parseExistingTracks existingResponse.Body, false
-
-                        else
-                            logAcc.Add(
-                                mkLog
-                                    AC.Error
-                                    "PlaylistTrackListFailure"
-                                    $"Failed to read playlist '{playlist.Name}'."
-                                    (Map [ "playlist", playlist.Name; "status", string existingResponse.StatusCode ])
-                            )
-
-                            return [], true
+                                return None, [], true
                     }
 
                 let plan = computePlan today rollingWindowDays playlist discovery.Releases existingTracks
                 planAcc.Add plan
 
-                let! applyResult, applyLogs = applyPlan config runtime plan
-                logAcc.AddRange applyLogs
-                addedTotal <- addedTotal + applyResult.AddedCount
-                removedTotal <- removedTotal + applyResult.RemovedCount
-                hadFailures <- hadFailures || createFailure || applyResult.HadPlaylistFailures
+                match resolvedId with
+                | Some pid ->
+                    let! applyResult, applyLogs = applyPlan config runtime pid plan
+                    logAcc.AddRange applyLogs
+                    addedTotal <- addedTotal + applyResult.AddedCount
+                    removedTotal <- removedTotal + applyResult.RemovedCount
+                    hadFailures <- hadFailures || createFailure || applyResult.HadPlaylistFailures
+                | None ->
+                    // No playlist ID available (create failed) — skip apply but
+                    // mark as failure so the overall outcome is partial_failure.
+                    hadFailures <- true
 
             let finalResult: AC.ReconcileResult =
                 { Plans = planAcc |> Seq.toList

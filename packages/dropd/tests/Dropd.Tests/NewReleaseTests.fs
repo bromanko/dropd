@@ -48,9 +48,9 @@ let private happySetup extraRoutes =
            route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
            route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-5765078.json"))
            route "apple" "GET" "/v1/catalog/us/albums/9002" [] (Always(okFixture "album-9002-no-genres.json"))
-           route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 404 "{}"))
+           route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 """{ "data": [] }"""))
            route "apple" "POST" "/v1/me/library/playlists" [] (Always(okFixture "playlist-create-success.json"))
-           route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}")) ]
+           route "apple" "POST" "/v1/me/library/playlists/p.playlistCreated/tracks" [] (Always(withStatus 200 "{}")) ]
          @ extraRoutes)
 
 [<Tests>]
@@ -85,7 +85,7 @@ let tests =
 
               let addRequest =
                   output.Requests
-                  |> List.tryFind (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+                  |> List.tryFind (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks")
 
               Expect.isSome addRequest "playlist add request should be present"
               Expect.stringContains addRequest.Value.Body.Value "track-9001-a" "in-window release tracks should be included"
@@ -120,7 +120,7 @@ let tests =
 
               let addRequest =
                   output.Requests
-                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks")
 
               Expect.stringContains addRequest.Body.Value "collab-track" "collaboration track should be included"
 
@@ -130,7 +130,7 @@ let tests =
 
               let addRequest =
                   output.Requests
-                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks")
 
               Expect.equal (addRequest.Body.Value.Split("track-9001-a").Length - 1) 1 "duplicate release should contribute tracks once"
 
@@ -171,15 +171,15 @@ let tests =
                       [ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 singleLibraryArtistBody))
                         route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515" ] (Always(withStatus 200 singleRatingBody))
                         route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 200 duplicateTrackBody))
-                        route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 404 "{}"))
+                        route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 """{ "data": [] }"""))
                         route "apple" "POST" "/v1/me/library/playlists" [] (Always(okFixture "playlist-create-success.json"))
-                        route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}")) ]
+                        route "apple" "POST" "/v1/me/library/playlists/p.playlistCreated/tracks" [] (Always(withStatus 200 "{}")) ]
 
               let output = runSync noLabelConfig setup
 
               let addRequest =
                   output.Requests
-                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks")
 
               Expect.equal (addRequest.Body.Value.Split("dup-track").Length - 1) 1 "duplicate track id should appear once"
 

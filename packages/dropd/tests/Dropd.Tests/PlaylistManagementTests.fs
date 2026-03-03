@@ -34,6 +34,28 @@ let private seedRatingBody =
 }
 """
 
+let private emptyPlaylistList =
+    """{ "data": [] }"""
+
+let private playlistListWithElectronic =
+    """
+{
+  "data": [
+    { "id": "p.existing", "type": "library-playlists", "attributes": { "name": "Electronic Drops" } }
+  ]
+}
+"""
+
+let private playlistListWithBoth =
+    """
+{
+  "data": [
+    { "id": "p.elec", "type": "library-playlists", "attributes": { "name": "Electronic Drops" } },
+    { "id": "p.dance", "type": "library-playlists", "attributes": { "name": "Dance Drops" } }
+  ]
+}
+"""
+
 let private onePlaylist =
     { validConfig with
         LabelNames = []
@@ -46,16 +68,15 @@ let private twoPlaylists =
             [ { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
               { Name = "Dance Drops"; GenreCriteria = [ "electronic" ] } ] }
 
+// Base routes for "first run" — playlists don't exist yet.
 let private baseRoutes =
     [ route "apple" "GET" "/v1/me/library/artists" [] (Always(withStatus 200 seedLibraryBody))
-      route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515" ] (Always(withStatus 200 seedRatingBody))
+      route "apple" "GET" "/v1/me/ratings/artists" [] (Always(withStatus 200 seedRatingBody))
       route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
-      route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 404 "{}"))
-      route "apple" "GET" "/v1/me/library/playlists/Dance%20Drops/tracks" [] (Always(withStatus 404 "{}"))
+      route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 emptyPlaylistList))
       route "apple" "POST" "/v1/me/library/playlists" [] (Always(okFixture "playlist-create-success.json"))
-      route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}"))
-      route "apple" "POST" "/v1/me/library/playlists/Dance%20Drops/tracks" [] (Always(withStatus 200 "{}"))
-      route "apple" "DELETE" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 "{}")) ]
+      route "apple" "POST" "/v1/me/library/playlists/p.playlistCreated/tracks" [] (Always(withStatus 200 "{}"))
+      route "apple" "DELETE" "/v1/me/library/playlists/p.playlistCreated/tracks" [] (Always(withStatus 200 "{}")) ]
 
 let private setupWithExtras extras = setupWith (baseRoutes @ extras)
 
@@ -78,7 +99,7 @@ let tests =
 
               Expect.isTrue
                   (output.Requests
-                   |> List.exists (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks"))
+                   |> List.exists (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks"))
                   "track-add request should be emitted"
 
           testCase "DD-047 skips tracks already in playlist"
@@ -95,11 +116,14 @@ let tests =
               let output =
                   runSync
                       onePlaylist
-                      (setupWithExtras [ route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 existingBody)) ])
+                      (setupWithExtras
+                          [ route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 playlistListWithElectronic))
+                            route "apple" "GET" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 existingBody))
+                            route "apple" "POST" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 "{}")) ])
 
               let addRequest =
                   output.Requests
-                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+                  |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.existing/tracks")
 
               Expect.isFalse (addRequest.Body.Value.Contains("track-9001-a")) "existing track should not be re-added"
               Expect.stringContains addRequest.Body.Value "track-9001-b" "new track should still be added"
@@ -111,11 +135,15 @@ let tests =
               let output =
                   runSync
                       onePlaylist
-                      (setupWithExtras [ route "apple" "GET" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 200 existingBody)) ])
+                      (setupWithExtras
+                          [ route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 playlistListWithElectronic))
+                            route "apple" "GET" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 existingBody))
+                            route "apple" "POST" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 "{}"))
+                            route "apple" "DELETE" "/v1/me/library/playlists/p.existing/tracks" [] (Always(withStatus 200 "{}")) ])
 
               let removeRequest =
                   output.Requests
-                  |> List.find (fun req -> req.Method = "DELETE" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+                  |> List.find (fun req -> req.Method = "DELETE" && req.Path = "/v1/me/library/playlists/p.existing/tracks")
 
               Expect.stringContains (removeRequest.Query |> List.map snd |> String.concat ",") "track-existing-old" "stale track should be removed"
 
@@ -162,8 +190,8 @@ let tests =
               let first = runSync onePlaylist (setupWithExtras [ route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 200 firstAlbums)) ])
               let second = runSync onePlaylist (setupWithExtras [ route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 200 secondAlbums)) ])
 
-              let firstAdd = first.Requests |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
-              let secondAdd = second.Requests |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks")
+              let firstAdd = first.Requests |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks")
+              let secondAdd = second.Requests |> List.find (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks")
 
               Expect.stringContains firstAdd.Body.Value "first-track" "first run should add first-track"
               Expect.stringContains secondAdd.Body.Value "second-track" "second run should recalculate and add second-track"
@@ -172,7 +200,7 @@ let tests =
           <| fun _ ->
               let failingSetup =
                   setupWithExtras
-                      [ route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ]
+                      [ route "apple" "POST" "/v1/me/library/playlists/p.playlistCreated/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ]
 
               let succeedingSetup = setupWithExtras []
 
@@ -183,7 +211,7 @@ let tests =
 
               Expect.isTrue
                   (second.Requests
-                   |> List.exists (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Electronic%20Drops/tracks"))
+                   |> List.exists (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/p.playlistCreated/tracks"))
                   "second sync should still reconcile playlist mutations"
 
           testCase "DD-051 logs error on playlist creation failure"
@@ -214,7 +242,7 @@ let tests =
               let output =
                   runSync
                       onePlaylist
-                      (setupWithExtras [ route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ])
+                      (setupWithExtras [ route "apple" "POST" "/v1/me/library/playlists/p.playlistCreated/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ])
 
               Expect.isTrue
                   (output.Logs
@@ -231,11 +259,13 @@ let tests =
                   runSync
                       twoPlaylists
                       (setupWithExtras
-                          [ route "apple" "POST" "/v1/me/library/playlists/Electronic%20Drops/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}"))
-                            route "apple" "POST" "/v1/me/library/playlists/Dance%20Drops/tracks" [] (Always(withStatus 200 "{}")) ])
+                          [ route "apple" "POST" "/v1/me/library/playlists/p.playlistCreated/tracks" [] (Always(withStatus 500 "{\"error\":\"add failed\"}")) ])
 
-              Expect.isTrue
-                  (output.Requests
-                   |> List.exists (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists/Dance%20Drops/tracks"))
-                  "other playlists should continue after one add failure"
+              // Second playlist also gets created with the same fixture ID, so both
+              // use p.playlistCreated. The test verifies that the second playlist's
+              // creation request is still attempted after the first playlist's track-add fails.
+              let createRequests =
+                  output.Requests |> List.filter (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists")
+
+              Expect.equal createRequests.Length 2 "both playlists should be created despite first track-add failure"
         ]

@@ -1,5 +1,11 @@
 {
-  "data": {
-    "id": "playlist-created"
-  }
+  "data": [
+    {
+      "id": "p.playlistCreated",
+      "type": "library-playlists",
+      "attributes": {
+        "name": "Created Playlist"
+      }
+    }
+  ]
 }
