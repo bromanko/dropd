@@ -1,5 +1,6 @@
 module Dropd.Tests.ApiResilienceTests
 
+open System
 open Expecto
 open Dropd.Core.Types
 open Dropd.Tests.TestHarness
@@ -198,26 +199,92 @@ let tests =
 
           // DD-086: If sync runtime exceeds the configured maximum sync runtime, then dropd
           // shall abort the current sync.
-          // Setup: MaxSyncRuntimeMinutes = 15. Simulate delays exceeding 15 minutes.
-          // Assert: ObservedOutput.Outcome = Aborted.
-          ptestCase "DD-086 aborts sync when runtime exceeds maximum" <| fun _ -> ()
+          testCase "DD-086 aborts sync when runtime exceeds maximum" <| fun _ ->
+              let config = { resilienceConfig with MaxSyncRuntimeMinutes = 1 }
+              let callCount = ref 0
+              let startTime = DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero)
+              let clockFn () =
+                  callCount.Value <- callCount.Value + 1
+                  // After a few UtcNow calls (wrap + initial requests), advance past limit
+                  if callCount.Value > 3 then
+                      startTime.AddMinutes(2.0)
+                  else
+                      startTime
+
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ] (Always(okFixture "library-artists.json"))
+                  ]
+
+              let output = runSyncWithClock clockFn config setup
+
+              Expect.equal output.Outcome (Some(Aborted "RuntimeExceeded")) "outcome should be Aborted RuntimeExceeded"
 
           // DD-087: If sync runtime exceeds the configured maximum sync runtime, then dropd
           // shall log an aborted sync outcome.
-          // Setup: Same as DD-086.
-          // Assert: Logs contain entry with Code = SyncAbortedRuntimeExceeded.
-          ptestCase "DD-087 logs aborted outcome on runtime exceeded" <| fun _ -> ()
+          testCase "DD-087 logs aborted outcome on runtime exceeded" <| fun _ ->
+              let config = { resilienceConfig with MaxSyncRuntimeMinutes = 1 }
+              let callCount = ref 0
+              let startTime = DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero)
+              let clockFn () =
+                  callCount.Value <- callCount.Value + 1
+                  if callCount.Value > 3 then
+                      startTime.AddMinutes(2.0)
+                  else
+                      startTime
+
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ] (Always(okFixture "library-artists.json"))
+                  ]
+
+              let output = runSyncWithClock clockFn config setup
+
+              let abortLog = output.Logs |> List.tryFind (fun log -> log.Code = "SyncAbortedRuntimeExceeded")
+              Expect.isSome abortLog "should log SyncAbortedRuntimeExceeded"
 
           // DD-088: If the API error rate within a sync exceeds the configured threshold,
           // then dropd shall abort the current sync.
-          // Setup: ErrorRateAbortPercent = 30. Route 40% of API calls to fail.
-          // Assert: ObservedOutput.Outcome = Aborted.
-          ptestCase "DD-088 aborts sync when error rate exceeds threshold" <| fun _ -> ()
+          testCase "DD-088 aborts sync when error rate exceeds threshold" <| fun _ ->
+              let config = { resilienceConfig with ErrorRateAbortPercent = 30; MaxRetries = 0 }
+
+              // Route many endpoints to return 500 so error rate exceeds 30%.
+              // Library artists and ratings succeed so the sync gets far enough.
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ] (Always(okFixture "library-artists.json"))
+                      // Both artist album endpoints return 500
+                      route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 500 (fixture "error-500.json")))
+                      route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(withStatus 500 (fixture "error-500.json")))
+                  ]
+
+              let output = runSync config setup
+
+              match output.Outcome with
+              | Some(Aborted reason) ->
+                  Expect.isTrue (reason = "ErrorRate" || reason = "CatalogUnavailable") $"should abort with ErrorRate or CatalogUnavailable, got {reason}"
+              | other ->
+                  failtest $"expected Aborted outcome, got {other}"
 
           // DD-089: If the API error rate within a sync exceeds the configured threshold,
           // then dropd shall log an aborted sync outcome with error-rate details.
-          // Setup: Same as DD-088.
-          // Assert: Logs contain entry with Code = SyncAbortedErrorRate including rate details.
-          ptestCase "DD-089 logs aborted outcome with error rate details" <| fun _ -> ()
+          testCase "DD-089 logs aborted outcome with error rate details" <| fun _ ->
+              let config = { resilienceConfig with ErrorRateAbortPercent = 30; MaxRetries = 0 }
+
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ] (Always(okFixture "library-artists.json"))
+                      route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(withStatus 500 (fixture "error-500.json")))
+                      route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(withStatus 500 (fixture "error-500.json")))
+                  ]
+
+              let output = runSync config setup
+
+              let errorRateLog = output.Logs |> List.tryFind (fun log -> log.Code = "SyncAbortedErrorRate")
+              Expect.isSome errorRateLog "should log SyncAbortedErrorRate"
+              let data = errorRateLog.Value.Data
+              Expect.isTrue (data.ContainsKey "error_rate") "should include error_rate"
+              Expect.isTrue (data.ContainsKey "failed") "should include failed"
+              Expect.isTrue (data.ContainsKey "total") "should include total"
 
           ]

@@ -65,7 +65,7 @@ let retryTests =
 
             Expect.equal callCount.Value 4 "should make 1 + 3 retry attempts"
             Expect.equal response.StatusCode 503 "should return last 503"
-            Expect.equal stats.FailedRequests 4 "all 4 attempts should be failures"
+            Expect.equal stats.FailedRequests 1 "one final failed outcome"
 
         testCase "succeeds on retry after transient 5xx" <| fun _ ->
             let inner, callCount = fakeRuntime [ errorResponse 503; errorResponse 503; okResponse """{"data":[]}""" ]
@@ -77,7 +77,7 @@ let retryTests =
 
             Expect.equal callCount.Value 3 "should make 3 total attempts"
             Expect.equal response.StatusCode 200 "should return 200"
-            Expect.equal stats.FailedRequests 2 "2 failures before success"
+            Expect.equal stats.FailedRequests 0 "final outcome succeeded"
 
         testCase "retries on timeout up to MaxRetries" <| fun _ ->
             // The fake runtime delays 1500ms on first two calls, but timeout is 1s.
@@ -104,7 +104,7 @@ let retryTests =
 
             Expect.equal callCount.Value 3 "should make 3 total attempts"
             Expect.equal response.StatusCode 200 "should return 200 on success"
-            Expect.equal stats.FailedRequests 2 "2 timeout failures"
+            Expect.equal stats.FailedRequests 0 "final outcome succeeded"
 
         testCase "computes exponential delays with deterministic jitter" <| fun _ ->
             let inner, _callCount = fakeRuntime [ errorResponse 503; errorResponse 503; errorResponse 503; errorResponse 503; okResponse """{"data":[]}""" ]
@@ -226,4 +226,112 @@ let paginationTests =
             | Error resp ->
                 Expect.equal resp.StatusCode 500 "should return 500 error"
             | Ok _ -> failtest "should return error"
+    ]
+
+[<Tests>]
+let guardTests =
+    testList "Unit.ResilientPipeline.Guards" [
+        testCase "aborts when runtime exceeds maximum" <| fun _ ->
+            let utcNowCallCount = ref 0
+            let startTime = DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero)
+            let inner : AC.ApiRuntime =
+                { Execute = fun _ -> async {
+                      return okResponse """{"data":[]}"""
+                  }
+                  UtcNow = fun () ->
+                      utcNowCallCount.Value <- utcNowCallCount.Value + 1
+                      // First UtcNow call is from wrap() recording syncStartTime.
+                      // Second is from checkGuards() after first Execute.
+                      // Third is from checkGuards() after second Execute — return late time.
+                      if utcNowCallCount.Value >= 3 then
+                          startTime.AddMinutes(16.0)
+                      else
+                          startTime }
+            let stats = createStats ()
+            let config = { defaultPipelineConfig with MaxSyncRuntimeMinutes = 15 }
+            let wrapped = wrap config stats noDelay ignore (Some 42) inner
+
+            // First call succeeds
+            let _r1 = wrapped.Execute dummyRequest |> Async.RunSynchronously
+
+            // Second call should abort
+            let mutable aborted = false
+            let mutable reason = ""
+            try
+                let _r2 = wrapped.Execute dummyRequest |> Async.RunSynchronously
+                ()
+            with
+            | SyncAbortedException(r, _) ->
+                aborted <- true
+                reason <- r
+
+            Expect.isTrue aborted "should raise SyncAbortedException"
+            Expect.equal reason "RuntimeExceeded" "reason should be RuntimeExceeded"
+
+        testCase "does not abort when runtime is within limit" <| fun _ ->
+            let startTime = DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero)
+            let inner : AC.ApiRuntime =
+                { Execute = fun _ -> async { return okResponse """{"data":[]}""" }
+                  UtcNow = fun () -> startTime.AddMinutes(14.0) }
+            let stats = createStats ()
+            let config = { defaultPipelineConfig with MaxSyncRuntimeMinutes = 15 }
+            let wrapped = wrap config stats noDelay ignore (Some 42) inner
+
+            let response = wrapped.Execute dummyRequest |> Async.RunSynchronously
+            Expect.equal response.StatusCode 200 "should return 200 without abort"
+
+        testCase "aborts when error rate exceeds threshold" <| fun _ ->
+            let callIndex = ref 0
+            let inner : AC.ApiRuntime =
+                { Execute = fun _ -> async {
+                      callIndex.Value <- callIndex.Value + 1
+                      // 4 out of 6 fail (67%)
+                      if callIndex.Value <= 4 then
+                          return errorResponse 500
+                      else
+                          return okResponse """{"data":[]}"""
+                  }
+                  UtcNow = fun () -> DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero) }
+            let stats = createStats ()
+            // MaxRetries = 0 so each call is a single attempt (no retries)
+            let config = { defaultPipelineConfig with ErrorRateAbortPercent = 30; MaxRetries = 0 }
+            let wrapped = wrap config stats noDelay ignore (Some 42) inner
+
+            let mutable aborted = false
+            let mutable reason = ""
+            try
+                // Make enough calls to trigger error rate check (need >= 5 total)
+                for _ in 1..6 do
+                    let _r = wrapped.Execute dummyRequest |> Async.RunSynchronously
+                    ()
+            with
+            | SyncAbortedException(r, _) ->
+                aborted <- true
+                reason <- r
+
+            Expect.isTrue aborted "should raise SyncAbortedException"
+            Expect.equal reason "ErrorRate" "reason should be ErrorRate"
+
+        testCase "does not abort on error rate below threshold" <| fun _ ->
+            let callIndex = ref 0
+            let inner : AC.ApiRuntime =
+                { Execute = fun _ -> async {
+                      callIndex.Value <- callIndex.Value + 1
+                      // 1 out of 5 fails (20%)
+                      if callIndex.Value = 1 then
+                          return errorResponse 500
+                      else
+                          return okResponse """{"data":[]}"""
+                  }
+                  UtcNow = fun () -> DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero) }
+            let stats = createStats ()
+            let config = { defaultPipelineConfig with ErrorRateAbortPercent = 30; MaxRetries = 0 }
+            let wrapped = wrap config stats noDelay ignore (Some 42) inner
+
+            // All 5 calls should complete without abort
+            for _ in 1..5 do
+                let _r = wrapped.Execute dummyRequest |> Async.RunSynchronously
+                ()
+
+            Expect.equal stats.TotalRequests 5 "should complete all 5 requests"
     ]

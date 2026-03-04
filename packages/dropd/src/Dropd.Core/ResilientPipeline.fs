@@ -64,6 +64,7 @@ module ResilientPipeline =
             | None -> Random()
 
         let timeoutMs = pipelineConfig.RequestTimeoutSeconds * 1000
+        let syncStartTime = inner.UtcNow()
 
         let executeWithTimeout (request: AC.ApiRequest) : Async<Result<AC.ApiResponse, string>> =
             async {
@@ -78,20 +79,50 @@ module ResilientPipeline =
         let isTransient (statusCode: int) = statusCode >= 500
         let basedelayMs = 1000
 
+        let checkGuards () =
+            // Runtime limit check
+            let elapsed = inner.UtcNow() - syncStartTime
+            if elapsed > TimeSpan.FromMinutes(float pipelineConfig.MaxSyncRuntimeMinutes) then
+                let logEntry : AC.LogEntry =
+                    { Level = AC.Error
+                      Code = "SyncAbortedRuntimeExceeded"
+                      Message = $"Sync runtime exceeded maximum of {pipelineConfig.MaxSyncRuntimeMinutes} minutes."
+                      Data = Map [ "elapsed_minutes", string (int elapsed.TotalMinutes); "limit_minutes", string pipelineConfig.MaxSyncRuntimeMinutes ] }
+                raise (SyncAbortedException("RuntimeExceeded", logEntry))
+
+            // Error rate check (only after 5+ requests to avoid early abort)
+            if stats.TotalRequests >= 5 then
+                let errorRate = stats.FailedRequests * 100 / stats.TotalRequests
+                if errorRate > pipelineConfig.ErrorRateAbortPercent then
+                    let logEntry : AC.LogEntry =
+                        { Level = AC.Error
+                          Code = "SyncAbortedErrorRate"
+                          Message = $"API error rate ({errorRate}%%) exceeded threshold ({pipelineConfig.ErrorRateAbortPercent}%%)."
+                          Data = Map [
+                              "error_rate", string errorRate
+                              "failed", string stats.FailedRequests
+                              "total", string stats.TotalRequests ] }
+                    raise (SyncAbortedException("ErrorRate", logEntry))
+
         let execute (request: AC.ApiRequest) : Async<AC.ApiResponse> =
             async {
+                // Only retry and track stats for Apple Music requests.
+                // Last.fm errors are handled gracefully by the similar-artist provider.
+                let shouldRetry = request.Service = AC.AppleMusic
                 let mutable attempt = 0
                 let mutable finalResponse : AC.ApiResponse option = None
 
+                if not shouldRetry then
+                    let! response = inner.Execute request
+                    return response
+                else
+
                 while finalResponse.IsNone do
                     let! result = executeWithTimeout request
-                    stats.TotalRequests <- stats.TotalRequests + 1
 
                     match result with
                     | Ok response when response.StatusCode = 429 ->
-                        // Rate-limit handling (milestone 3 will flesh this out;
-                        // for now treat 429 as retryable).
-                        stats.FailedRequests <- stats.FailedRequests + 1
+                        // Rate-limit handling: 429 is retryable.
 
                         if attempt < pipelineConfig.MaxRetries then
                             let retryAfter =
@@ -115,8 +146,6 @@ module ResilientPipeline =
                             finalResponse <- Some response
 
                     | Ok response when isTransient response.StatusCode ->
-                        stats.FailedRequests <- stats.FailedRequests + 1
-
                         if attempt < pipelineConfig.MaxRetries then
                             let jitter = rng.Next(basedelayMs)
                             let delayMs = basedelayMs * (pown 2 attempt) + jitter
@@ -138,8 +167,6 @@ module ResilientPipeline =
                         finalResponse <- Some response
 
                     | Error _timeoutMsg ->
-                        stats.FailedRequests <- stats.FailedRequests + 1
-
                         if attempt < pipelineConfig.MaxRetries then
                             let jitter = rng.Next(basedelayMs)
                             let delayMs = basedelayMs * (pown 2 attempt) + jitter
@@ -161,7 +188,16 @@ module ResilientPipeline =
                                       Body = """{"error":"request timeout"}"""
                                       Headers = [] }
 
-                return finalResponse.Value
+                // Track stats and check guards after retry loop completes
+                let response = finalResponse.Value
+                stats.TotalRequests <- stats.TotalRequests + 1
+
+                if response.StatusCode >= 500 then
+                    stats.FailedRequests <- stats.FailedRequests + 1
+
+                checkGuards ()
+
+                return response
             }
 
         { Execute = execute

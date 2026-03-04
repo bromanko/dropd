@@ -764,6 +764,8 @@ module SyncEngine =
 
         appendLog AC.Info "SyncStarted" "Sync started." Map.empty
 
+        try
+
         match fetchLibraryArtists config resilientRuntime appendLog with
         | Error response ->
             match maybeAuthAbort "/v1/me/library/artists" response with
@@ -904,6 +906,11 @@ module SyncEngine =
                               "tracks_removed", string reconcileResult.RemovedCount ])
 
                     snapshot outcome
+
+        with
+        | ResilientPipeline.SyncAbortedException(reason, logEntry) ->
+            recordedLogs.Add logEntry
+            abort reason
 
     let runSyncWithProvider (provider: AC.SimilarArtistProvider) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
         runSyncInternal (Some provider) Async.Sleep config runtime knownPlaylistIds
