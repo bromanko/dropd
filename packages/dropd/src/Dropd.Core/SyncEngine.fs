@@ -627,28 +627,19 @@ module SyncEngine =
             if isSensitiveQueryParam name then name, "[redacted]"
             else name, value)
 
-    let private runSyncInternal (providerOpt: AC.SimilarArtistProvider option) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
+    let private runSyncInternal (providerOpt: AC.SimilarArtistProvider option) (delayFn: int -> Async<unit>) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
         let recordedRequests = ResizeArray<AC.ApiRequest>()
         let recordedLogs = ResizeArray<AC.LogEntry>()
 
-        // Pipeline setup: wrap the original runtime with resilience behaviour
-        // (retry, rate-limit, execution guards). The resilient runtime sits
-        // between the recording wrapper and the original runtime so retries
-        // are captured in the observable log.
-        let pipelineConfig = ResilientPipeline.configFrom config
-        let pipelineStats = ResilientPipeline.createStats ()
-
-        let resilientRuntime =
-            ResilientPipeline.wrap
-                pipelineConfig
-                pipelineStats
-                Async.Sleep
-                recordedLogs.Add
-                None
-                runtime
+        // Pipeline setup: recording wraps the original runtime so every request
+        // (including retries) is captured. The resilient pipeline then wraps the
+        // recording runtime to add retry/rate-limit/guard behaviour.
+        //
+        // Flow: caller → resilientRuntime (retries/guards) →
+        //       runtimeWithRecording (captures requests) → original runtime
 
         let runtimeWithRecording: AC.ApiRuntime =
-            { resilientRuntime with
+            { runtime with
                 Execute =
                     (fun request ->
                         async {
@@ -660,14 +651,27 @@ module SyncEngine =
                                     Headers = redactHeaders request.Headers
                                     Query = redactQueryParams request.Query }
                             recordedRequests.Add safeRequest
-                            return! resilientRuntime.Execute request
+                            return! runtime.Execute request
                         }) }
 
-        // Create the provider using the recording runtime so Last.fm requests are captured.
+        let pipelineConfig = ResilientPipeline.configFrom config
+        let pipelineStats = ResilientPipeline.createStats ()
+
+        let resilientRuntime =
+            ResilientPipeline.wrap
+                pipelineConfig
+                pipelineStats
+                delayFn
+                recordedLogs.Add
+                None
+                runtimeWithRecording
+
+        // Create the provider using the resilient runtime so Last.fm requests
+        // go through recording + retry.
         let provider =
             match providerOpt with
             | Some p -> p
-            | None -> SimilarArtists.createLastFmProvider config runtimeWithRecording
+            | None -> SimilarArtists.createLastFmProvider config resilientRuntime
 
         let appendLog level code message data = recordedLogs.Add(mkLog level code message data)
         let appendLogs logs = logs |> List.iter recordedLogs.Add
@@ -715,7 +719,7 @@ module SyncEngine =
 
         appendLog AC.Info "SyncStarted" "Sync started." Map.empty
 
-        match fetchLibraryArtists config runtimeWithRecording with
+        match fetchLibraryArtists config resilientRuntime with
         | Error response ->
             match maybeAuthAbort "/v1/me/library/artists" response with
             | Some reason -> abort reason
@@ -731,7 +735,7 @@ module SyncEngine =
 
                 abort "LibraryArtistsFailed"
         | Ok libraryArtists ->
-            match fetchFavoritedArtists config runtimeWithRecording libraryArtists with
+            match fetchFavoritedArtists config resilientRuntime libraryArtists with
             | Error response ->
                 match maybeAuthAbort "/v1/me/ratings/artists" response with
                 | Some reason -> abort reason
@@ -748,11 +752,11 @@ module SyncEngine =
                     abort "FavoritedArtistsFailed"
             | Ok favoritedArtists ->
                 let seedArtists = buildSeedArtists libraryArtists favoritedArtists
-                let labelArtists, labelReleases, labelLogs = resolveLabels config runtimeWithRecording
+                let labelArtists, labelReleases, labelLogs = resolveLabels config resilientRuntime
                 appendLogs labelLogs
 
                 // -- Similar-artist discovery (Phase 2) --
-                let similarArtists = discoverSimilarArtists provider config runtimeWithRecording seedArtists appendLog
+                let similarArtists = discoverSimilarArtists provider config resilientRuntime seedArtists appendLog
 
                 // Single-pass dedup avoids intermediate @ concatenations and extra HashSet allocation.
                 let allArtists =
@@ -767,7 +771,7 @@ module SyncEngine =
 
                 let artistReleaseResults =
                     allArtists
-                    |> List.map (fun artist -> artist, fetchArtistReleases config runtimeWithRecording artist.Id)
+                    |> List.map (fun artist -> artist, fetchArtistReleases config resilientRuntime artist.Id)
 
                 let fatalCatalogError =
                     artistReleaseResults
@@ -795,7 +799,7 @@ module SyncEngine =
                         |> List.choose (fun (_, result) -> match result with | Ok releases -> Some releases | Error _ -> None)
                         |> List.collect id
 
-                    let today = runtimeWithRecording.UtcNow() |> fun now -> DateOnly.FromDateTime(now.UtcDateTime)
+                    let today = resilientRuntime.UtcNow() |> fun now -> DateOnly.FromDateTime(now.UtcDateTime)
                     let lookbackDays = config.LookbackDays |> Config.PositiveInt.value
 
                     let candidateReleases =
@@ -803,14 +807,14 @@ module SyncEngine =
                         |> filterByLookback today lookbackDays
                         |> dedupReleases
 
-                    let classifiedReleases, classifyLogs = classifyByGenres config runtimeWithRecording candidateReleases
+                    let classifiedReleases, classifyLogs = classifyByGenres config resilientRuntime candidateReleases
                     appendLogs classifyLogs
 
                     // -- Artist dislike filtering (Phase 2) --
                     // Fetch song and album ratings concurrently since they are independent.
                     let excludedArtists =
-                        let songResultAsync = async { return fetchSongRatings config runtimeWithRecording }
-                        let albumResultAsync = async { return fetchAlbumRatings config runtimeWithRecording }
+                        let songResultAsync = async { return fetchSongRatings config resilientRuntime }
+                        let albumResultAsync = async { return fetchAlbumRatings config resilientRuntime }
                         let results = Async.Parallel [| songResultAsync; albumResultAsync |] |> Async.RunSynchronously
                         let songResult, albumResult = results.[0], results.[1]
                         match songResult, albumResult with
@@ -838,7 +842,7 @@ module SyncEngine =
                     // reconcilePlaylists now returns Async; run it synchronously
                     // at this single top-level call site (Finding 1 / 8).
                     let reconcileResult, reconcileLogs =
-                        PlaylistReconcile.reconcilePlaylists config discovery runtimeWithRecording knownPlaylistIds
+                        PlaylistReconcile.reconcilePlaylists config discovery resilientRuntime knownPlaylistIds
                         |> Async.RunSynchronously
 
                     appendLogs reconcileLogs
@@ -857,7 +861,17 @@ module SyncEngine =
                     snapshot outcome
 
     let runSyncWithProvider (provider: AC.SimilarArtistProvider) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
-        runSyncInternal (Some provider) config runtime knownPlaylistIds
+        runSyncInternal (Some provider) Async.Sleep config runtime knownPlaylistIds
+        |> Async.RunSynchronously
 
     let runSync (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
-        runSyncInternal None config runtime knownPlaylistIds
+        runSyncInternal None Async.Sleep config runtime knownPlaylistIds
+        |> Async.RunSynchronously
+
+    let runSyncWithDelay (delayFn: int -> Async<unit>) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
+        runSyncInternal None delayFn config runtime knownPlaylistIds
+        |> Async.RunSynchronously
+
+    let runSyncWithProviderAndDelay (provider: AC.SimilarArtistProvider) (delayFn: int -> Async<unit>) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
+        runSyncInternal (Some provider) delayFn config runtime knownPlaylistIds
+        |> Async.RunSynchronously

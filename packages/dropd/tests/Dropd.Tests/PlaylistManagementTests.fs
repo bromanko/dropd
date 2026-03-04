@@ -275,15 +275,24 @@ let tests =
 
           testCase "DD-052 continues after playlist creation failure"
           <| fun _ ->
+              // MaxRetries = 3 means 4 total attempts per request (1 original + 3 retries).
+              // Provide 4 × 500 for the first playlist creation to exhaust retries, then
+              // a 200 for the second playlist creation.
               let output =
                   runSync
                       twoPlaylists
-                      (setupWithExtras [ route "apple" "POST" "/v1/me/library/playlists" [] (Sequence [ withStatus 500 "{\"error\":\"create failed\"}"; okFixture "playlist-create-success.json" ]) ])
+                      (setupWithExtras [ route "apple" "POST" "/v1/me/library/playlists" [] (Sequence [
+                          withStatus 500 "{\"error\":\"create failed\"}"
+                          withStatus 500 "{\"error\":\"create failed\"}"
+                          withStatus 500 "{\"error\":\"create failed\"}"
+                          withStatus 500 "{\"error\":\"create failed\"}"
+                          okFixture "playlist-create-success.json" ]) ])
 
               let createRequests =
                   output.Requests |> List.filter (fun req -> req.Method = "POST" && req.Path = "/v1/me/library/playlists")
 
-              Expect.equal createRequests.Length 2 "both playlists should attempt creation"
+              // 4 attempts for first playlist (all fail) + 1 for second playlist (succeeds)
+              Expect.equal createRequests.Length 5 "both playlists should attempt creation (with retries)"
 
           testCase "DD-053 logs error on track addition failure"
           <| fun _ ->

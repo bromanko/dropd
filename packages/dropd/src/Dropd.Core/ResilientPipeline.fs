@@ -58,16 +58,110 @@ module ResilientPipeline =
         (inner: AC.ApiRuntime)
         : AC.ApiRuntime =
 
+        let rng =
+            match jitterSeed with
+            | Some seed -> Random(seed)
+            | None -> Random()
+
+        let timeoutMs = pipelineConfig.RequestTimeoutSeconds * 1000
+
+        let executeWithTimeout (request: AC.ApiRequest) : Async<Result<AC.ApiResponse, string>> =
+            async {
+                try
+                    let! child = Async.StartChild(inner.Execute request, timeoutMs)
+                    let! response = child
+                    return Ok response
+                with :? TimeoutException ->
+                    return Error "timeout"
+            }
+
+        let isTransient (statusCode: int) = statusCode >= 500
+        let basedelayMs = 1000
+
         let execute (request: AC.ApiRequest) : Async<AC.ApiResponse> =
             async {
-                // Phase 3 milestone 1: transparent pass-through.
-                let! response = inner.Execute request
-                stats.TotalRequests <- stats.TotalRequests + 1
+                let mutable attempt = 0
+                let mutable finalResponse : AC.ApiResponse option = None
 
-                if response.StatusCode >= 500 then
-                    stats.FailedRequests <- stats.FailedRequests + 1
+                while finalResponse.IsNone do
+                    let! result = executeWithTimeout request
+                    stats.TotalRequests <- stats.TotalRequests + 1
 
-                return response
+                    match result with
+                    | Ok response when response.StatusCode = 429 ->
+                        // Rate-limit handling (milestone 3 will flesh this out;
+                        // for now treat 429 as retryable).
+                        stats.FailedRequests <- stats.FailedRequests + 1
+
+                        if attempt < pipelineConfig.MaxRetries then
+                            let retryAfter =
+                                response.Headers
+                                |> List.tryFind (fun (k, _) -> String.Equals(k, "Retry-After", StringComparison.OrdinalIgnoreCase))
+                                |> Option.bind (fun (_, v) -> match Int32.TryParse(v) with | true, n -> Some n | _ -> None)
+                                |> Option.defaultValue 2
+
+                            let delayMs = retryAfter * 1000
+                            stats.ComputedDelays.Add(delayMs)
+
+                            appendLog
+                                { Level = AC.Info
+                                  Code = "RetryAfterWait"
+                                  Message = $"Rate limited (429). Waiting {delayMs}ms before retry."
+                                  Data = Map [ "delay_ms", string delayMs; "attempt", string attempt ] }
+
+                            do! delay delayMs
+                            attempt <- attempt + 1
+                        else
+                            finalResponse <- Some response
+
+                    | Ok response when isTransient response.StatusCode ->
+                        stats.FailedRequests <- stats.FailedRequests + 1
+
+                        if attempt < pipelineConfig.MaxRetries then
+                            let jitter = rng.Next(basedelayMs)
+                            let delayMs = basedelayMs * (pown 2 attempt) + jitter
+                            stats.ComputedDelays.Add(delayMs)
+
+                            appendLog
+                                { Level = AC.Info
+                                  Code = "TransientRetryScheduled"
+                                  Message = $"Transient failure (HTTP {response.StatusCode}). Retrying in {delayMs}ms."
+                                  Data = Map [ "delay_ms", string delayMs; "attempt", string attempt; "status", string response.StatusCode ] }
+
+                            do! delay delayMs
+                            attempt <- attempt + 1
+                        else
+                            finalResponse <- Some response
+
+                    | Ok response ->
+                        // Success or non-retryable status.
+                        finalResponse <- Some response
+
+                    | Error _timeoutMsg ->
+                        stats.FailedRequests <- stats.FailedRequests + 1
+
+                        if attempt < pipelineConfig.MaxRetries then
+                            let jitter = rng.Next(basedelayMs)
+                            let delayMs = basedelayMs * (pown 2 attempt) + jitter
+                            stats.ComputedDelays.Add(delayMs)
+
+                            appendLog
+                                { Level = AC.Info
+                                  Code = "TransientRetryScheduled"
+                                  Message = $"Request timeout. Retrying in {delayMs}ms."
+                                  Data = Map [ "delay_ms", string delayMs; "attempt", string attempt; "status", "504" ] }
+
+                            do! delay delayMs
+                            attempt <- attempt + 1
+                        else
+                            // Synthesize a 504 response for the timeout.
+                            finalResponse <-
+                                Some
+                                    { StatusCode = 504
+                                      Body = """{"error":"request timeout"}"""
+                                      Headers = [] }
+
+                return finalResponse.Value
             }
 
         { Execute = execute

@@ -1,6 +1,25 @@
 module Dropd.Tests.ApiResilienceTests
 
 open Expecto
+open Dropd.Core.Types
+open Dropd.Tests.TestHarness
+open Dropd.Tests.TestData
+
+let private resilienceConfig =
+    { validConfig with
+        LabelNames = []
+        Playlists = [ { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] } ] }
+
+let private baseResilienceSetup extras =
+    setupWith
+        ([ route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
+           route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-657515.json"))
+           route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-5765078.json"))
+           route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 """{ "data": [{ "id": "p.elecDrops", "type": "library-playlists", "attributes": { "name": "Electronic Drops" } }] }"""))
+           route "apple" "GET" "/v1/me/library/playlists/p.elecDrops/tracks" [] (Always(withStatus 200 (fixture "playlist-tracks-existing.json")))
+           route "apple" "POST" "/v1/me/library/playlists/p.elecDrops/tracks" [] (Always(withStatus 200 "{}"))
+           route "apple" "DELETE" "/v1/me/library/playlists/p.elecDrops/tracks" [] (Always(withStatus 200 "{}")) ]
+         @ extras)
 
 [<Tests>]
 let tests =
@@ -23,10 +42,35 @@ let tests =
           // DD-082: When an API request fails due to timeout, transient network error,
           // or HTTP 5xx response, dropd shall retry up to the configured retry limit
           // using exponential backoff with jitter.
-          // Setup: MaxRetries = 3. Route → Sequence [503; 503; 503; 200].
-          // Assert: Exactly 4 requests total (1 original + 3 retries).
-          //         Delays increase exponentially between attempts.
-          ptestCase "DD-082 retries with exponential backoff on transient failures" <| fun _ -> ()
+          testCase "DD-082 retries with exponential backoff on transient failures" <| fun _ ->
+              let config = { resilienceConfig with MaxRetries = 3; RequestTimeoutSeconds = 1 }
+
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ]
+                          (Sequence [
+                              // First attempt: simulate timeout via delay > timeout
+                              { StatusCode = 200; Body = fixture "library-artists.json"; Headers = []; DelayMs = Some 1500 }
+                              // Second attempt: 503
+                              { StatusCode = 503; Body = fixture "error-500.json"; Headers = []; DelayMs = None }
+                              // Third attempt: success
+                              { StatusCode = 200; Body = fixture "library-artists.json"; Headers = []; DelayMs = None }
+                          ])
+                  ]
+
+              let output = runSync config setup
+
+              // Assert: exactly 3 requests to library-artists (timeout + 503 + success)
+              let libraryArtistRequests =
+                  output.Requests |> List.filter (fun r -> r.Path = "/v1/me/library/artists")
+              Expect.equal libraryArtistRequests.Length 3 "should make 3 requests to library-artists"
+
+              // Assert: outcome is not Aborted
+              Expect.notEqual output.Outcome (Some(Aborted "LibraryArtistsFailed")) "outcome should not be aborted"
+
+              // Assert: logs contain retry log codes
+              let retryLogs = output.Logs |> List.filter (fun log -> log.Code = "TransientRetryScheduled")
+              Expect.isTrue (retryLogs.Length >= 1) "should have at least one TransientRetryScheduled log"
 
           // DD-083: When an Apple Music API paginated response contains a next link, dropd
           // shall request subsequent pages until next is absent or the page-limit is reached.

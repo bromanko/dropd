@@ -137,6 +137,42 @@ module TestHarness =
 
     let private fixedUtcNow () = DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero)
 
+    let private createRuntimeWithClock (setup: FakeApiSetup) (clockFn: unit -> DateTimeOffset) : ApiContracts.ApiRuntime =
+        let scriptStates = Collections.Generic.Dictionary<EndpointKey, ScriptState>()
+
+        let execute (request: ApiContracts.ApiRequest) =
+            async {
+                let service = toServiceString request.Service
+
+                let responseScript =
+                    findRouteWithKey setup service request.Method request.Path request.Query
+
+                let response =
+                    match responseScript with
+                    | None -> notFoundResponse
+                    | Some(key, script) ->
+                        let state =
+                            match scriptStates.TryGetValue key with
+                            | true, existing -> existing
+                            | _ ->
+                                let created = { Index = 0 }
+                                scriptStates.[key] <- created
+                                created
+
+                        let newState, canned = serveResponse script state
+                        scriptStates.[key] <- newState
+                        canned
+
+                match response.DelayMs with
+                | Some d -> do! Async.Sleep d
+                | None -> ()
+
+                return response |> toApiResponse
+            }
+
+        { Execute = execute
+          UtcNow = clockFn }
+
     let private createRuntime (setup: FakeApiSetup) : ApiContracts.ApiRuntime =
         let scriptStates = Collections.Generic.Dictionary<EndpointKey, ScriptState>()
 
@@ -165,11 +201,19 @@ module TestHarness =
                         scriptStates.[key] <- newState
                         canned
 
+                match response.DelayMs with
+                | Some d -> do! Async.Sleep d
+                | None -> ()
+
                 return response |> toApiResponse
             }
 
         { Execute = execute
           UtcNow = fixedUtcNow }
+
+    // -- No-op delay for tests --
+
+    let private noDelay (_ms: int) = async { return () }
 
     // -- Sync runner --
 
@@ -187,7 +231,7 @@ module TestHarness =
               Outcome = Some(Aborted "InvalidConfig") }
         | Ok validConfig ->
             let runtime = createRuntime setup
-            let outcome, observed = SyncEngine.runSync validConfig runtime Map.empty
+            let outcome, observed = SyncEngine.runSyncWithDelay noDelay validConfig runtime Map.empty
 
             { Requests = observed.Requests |> List.map toRecordedRequest
               Logs = observed.Logs
@@ -207,7 +251,27 @@ module TestHarness =
               Outcome = Some(Aborted "InvalidConfig") }
         | Ok validConfig ->
             let runtime = createRuntime setup
-            let outcome, observed = SyncEngine.runSyncWithProvider provider validConfig runtime Map.empty
+            let outcome, observed = SyncEngine.runSyncWithProviderAndDelay provider noDelay validConfig runtime Map.empty
+
+            { Requests = observed.Requests |> List.map toRecordedRequest
+              Logs = observed.Logs
+              Outcome = Some outcome }
+
+    let runSyncWithClock (clockFn: unit -> DateTimeOffset) (config: SyncConfig) (setup: FakeApiSetup) : ObservedOutput =
+        match Config.validate config with
+        | Error _ ->
+            let invalidLog: ApiContracts.LogEntry =
+                { Level = ApiContracts.Error
+                  Code = "InvalidConfig"
+                  Message = "Sync configuration is invalid."
+                  Data = Map.empty }
+
+            { Requests = []
+              Logs = [ invalidLog ]
+              Outcome = Some(Aborted "InvalidConfig") }
+        | Ok validConfig ->
+            let runtime = createRuntimeWithClock setup clockFn
+            let outcome, observed = SyncEngine.runSyncWithDelay noDelay validConfig runtime Map.empty
 
             { Requests = observed.Requests |> List.map toRecordedRequest
               Logs = observed.Logs

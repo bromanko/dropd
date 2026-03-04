@@ -12,6 +12,7 @@
     <Compile Include="NormalizationUnitTests.fs" />
     <Compile Include="SyncEngineUnitTests.fs" />
     <Compile Include="PlaylistReconcileUnitTests.fs" />
+    <Compile Include="ResilientPipelineUnitTests.fs" />
     <Compile Include="RequirementCatalog.fs" />
     <Compile Include="ArtistSeedingTests.fs" />
     <Compile Include="LabelDiscoveryTests.fs" />
