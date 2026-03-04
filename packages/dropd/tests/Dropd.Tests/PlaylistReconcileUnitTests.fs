@@ -39,6 +39,7 @@ let private validConfig =
 
 let private discovery : AC.DiscoveryResult =
     { SeedArtists = []
+      SimilarArtists = []
       LabelArtists = []
       Releases =
         [ { Id = CatalogAlbumId "9001"

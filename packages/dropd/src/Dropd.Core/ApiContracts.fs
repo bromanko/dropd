@@ -57,8 +57,18 @@ module ApiContracts =
           GenreNames: string list
           TrackIds: Types.CatalogTrackId list }
 
+    type SimilarArtistProviderError =
+        | AuthFailure of message: string
+        | Unavailable of statusCode: int * message: string
+        | MalformedResponse of message: string
+
+    type SimilarArtistProvider =
+        { Name: string
+          GetSimilar: string * string option -> Async<Result<Types.SimilarArtist list, SimilarArtistProviderError>> }
+
     type DiscoveryResult =
         { SeedArtists: DiscoveredArtist list
+          SimilarArtists: DiscoveredArtist list
           LabelArtists: DiscoveredArtist list
           Releases: DiscoveredRelease list }
 

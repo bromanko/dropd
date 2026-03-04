@@ -1,0 +1,20 @@
+{
+  "data": [
+    {
+      "id": "album-1",
+      "type": "ratings",
+      "attributes": {
+        "value": -1,
+        "artistName": "BadArtist"
+      }
+    },
+    {
+      "id": "album-2",
+      "type": "ratings",
+      "attributes": {
+        "value": 1,
+        "artistName": "OtherArtist"
+      }
+    }
+  ]
+}

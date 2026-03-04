@@ -30,6 +30,17 @@ module TestData =
           Headers = []
           DelayMs = None }
 
+    let private lastFmFixturePath name =
+        Path.Combine("packages", "dropd", "tests", "Dropd.Tests", "Fixtures", "lastfm", name)
+
+    let lastFmFixture name = File.ReadAllText(lastFmFixturePath name)
+
+    let okLastFmFixture name : CannedResponse =
+        { StatusCode = 200
+          Body = lastFmFixture name
+          Headers = []
+          DelayMs = None }
+
     let withStatus code body : CannedResponse =
         { StatusCode = code
           Body = body

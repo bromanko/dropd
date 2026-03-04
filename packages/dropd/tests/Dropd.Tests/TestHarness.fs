@@ -192,3 +192,23 @@ module TestHarness =
             { Requests = observed.Requests |> List.map toRecordedRequest
               Logs = observed.Logs
               Outcome = Some outcome }
+
+    let runSyncWithProvider (provider: ApiContracts.SimilarArtistProvider) (config: SyncConfig) (setup: FakeApiSetup) : ObservedOutput =
+        match Config.validate config with
+        | Error _ ->
+            let invalidLog: ApiContracts.LogEntry =
+                { Level = ApiContracts.Error
+                  Code = "InvalidConfig"
+                  Message = "Sync configuration is invalid."
+                  Data = Map.empty }
+
+            { Requests = []
+              Logs = [ invalidLog ]
+              Outcome = Some(Aborted "InvalidConfig") }
+        | Ok validConfig ->
+            let runtime = createRuntime setup
+            let outcome, observed = SyncEngine.runSyncWithProvider provider validConfig runtime Map.empty
+
+            { Requests = observed.Requests |> List.map toRecordedRequest
+              Logs = observed.Logs
+              Outcome = Some outcome }

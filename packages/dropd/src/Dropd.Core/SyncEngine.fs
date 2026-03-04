@@ -389,6 +389,135 @@ module SyncEngine =
         |> Normalization.dedupByArtistId
         |> List.map (fun artist -> { Id = artist.Id; Name = artist.Name })
 
+    /// Parse an Apple Music artist search response into a list of (id, name) pairs.
+    let private parseSearchArtists (body: string) : (string * string) list =
+        use document = JsonDocument.Parse(body)
+
+        document.RootElement
+        |> tryGetProperty "results"
+        |> Option.bind (tryGetProperty "artists")
+        |> Option.bind (tryGetProperty "data")
+        |> Option.map (fun data ->
+            if data.ValueKind = JsonValueKind.Array then
+                data.EnumerateArray()
+                |> Seq.choose (fun item ->
+                    match tryGetString "id" item with
+                    | None -> None
+                    | Some id ->
+                        let name =
+                            item
+                            |> tryGetProperty "attributes"
+                            |> Option.bind (tryGetString "name")
+                            |> Option.defaultValue id
+                        Some(id, name))
+                |> Seq.toList
+            else
+                [])
+        |> Option.defaultValue []
+
+    /// Resolve a similar artist name to an Apple Music catalog artist by
+    /// searching the catalog and comparing normalized names.
+    let private resolveArtistByName
+        (config: Config.ValidSyncConfig)
+        (runtime: AC.ApiRuntime)
+        (artistName: string)
+        : AC.DiscoveredArtist option =
+        let response =
+            executeApple config runtime "GET" $"/v1/catalog/{config.Storefront}/search" [ "term", artistName; "types", "artists"; "limit", "5" ] None
+
+        match toResult parseSearchArtists response with
+        | Error _ -> None
+        | Ok candidates ->
+            let normalizedQuery = Normalization.normalizeText artistName
+
+            candidates
+            |> List.tryFind (fun (_, name) -> Normalization.normalizeText name = normalizedQuery)
+            |> Option.map (fun (id, name) -> { Id = withArtistId id; Name = name }: AC.DiscoveredArtist)
+
+    /// Discover similar artists for all seed artists via the provider, resolve
+    /// them to Apple Music catalog IDs, and return a deduplicated list.
+    /// Provider calls are fanned out concurrently via Async.Parallel; an auth
+    /// failure from any call short-circuits further processing.
+    /// Errors from the provider are logged and treated as non-fatal.
+    let private discoverSimilarArtists
+        (provider: AC.SimilarArtistProvider)
+        (config: Config.ValidSyncConfig)
+        (runtime: AC.ApiRuntime)
+        (seedArtists: AC.DiscoveredArtist list)
+        (appendLog: AC.LogLevel -> string -> string -> Map<string, string> -> unit)
+        : AC.DiscoveredArtist list =
+        let seedNormalized =
+            seedArtists
+            |> List.map (fun a -> Normalization.normalizeText a.Name)
+            |> Set.ofList
+
+        // Fan out all provider calls concurrently and collect results.
+        let providerResults =
+            seedArtists
+            |> List.map (fun seed -> async {
+                let! result = provider.GetSimilar(seed.Name, None)
+                return seed, result
+            })
+            |> Async.Parallel
+            |> Async.RunSynchronously
+
+        // Process results with a fold, short-circuiting on auth failure.
+        let rawSimilar =
+            providerResults
+            |> Array.fold
+                (fun (authFailed, acc) (seed, result) ->
+                    if authFailed then (true, acc)
+                    else
+                        match result with
+                        | Ok artists ->
+                            let filtered =
+                                artists
+                                |> List.filter (fun a -> not (seedNormalized.Contains(Normalization.normalizeText a.Name)))
+                            (false, acc @ filtered)
+                        | Error(AC.AuthFailure message) ->
+                            appendLog
+                                AC.Error
+                                "LastFmAuthFailure"
+                                "Last.fm authentication failed."
+                                (Map [ "message", message ])
+                            (true, acc)
+                        | Error(AC.Unavailable(statusCode, message)) ->
+                            appendLog
+                                AC.Error
+                                "SimilarArtistServiceUnavailable"
+                                "Similar artist data source is unavailable."
+                                (Map [ "status", string statusCode; "message", message ])
+                            (false, acc)
+                        | Error(AC.MalformedResponse message) ->
+                            appendLog
+                                AC.Warning
+                                "SimilarArtistMalformedResponse"
+                                "Malformed response from similar artist provider."
+                                (Map [ "message", message ])
+                            (false, acc))
+                (false, [])
+            |> snd
+
+        // Deduplicate by normalized name before resolving.
+        let uniqueSimilar =
+            rawSimilar
+            |> List.fold
+                (fun (seen: Set<string>, acc: Types.SimilarArtist list) artist ->
+                    let key = Normalization.normalizeText artist.Name
+                    if seen.Contains key then (seen, acc)
+                    else (seen.Add key, artist :: acc))
+                (Set.empty, [])
+            |> snd
+            |> List.rev
+
+        // Resolve each similar artist to an Apple Music catalog artist.
+        let resolved =
+            uniqueSimilar
+            |> List.choose (fun similar -> resolveArtistByName config runtime similar.Name)
+
+        // Deduplicate resolved artists by catalog ID.
+        resolved |> List.distinctBy (fun artist -> artist.Id)
+
     let private outcomeToText = function
         | Success -> "success"
         | PartialFailure -> "partial_failure"
@@ -406,7 +535,7 @@ module SyncEngine =
             if isSensitiveHeader name then name, "[redacted]"
             else name, value)
 
-    let runSync (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
+    let runSyncWithProvider (provider: AC.SimilarArtistProvider) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
         let recordedRequests = ResizeArray<AC.ApiRequest>()
         let recordedLogs = ResizeArray<AC.LogEntry>()
 
@@ -504,7 +633,19 @@ module SyncEngine =
                 let labelArtists, labelReleases, labelLogs = resolveLabels config runtimeWithRecording
                 appendLogs labelLogs
 
-                let allArtists = (seedArtists @ labelArtists) |> List.distinctBy (fun artist -> artist.Id)
+                // -- Similar-artist discovery (Phase 2) --
+                let similarArtists = discoverSimilarArtists provider config runtimeWithRecording seedArtists appendLog
+
+                // Single-pass dedup avoids intermediate @ concatenations and extra HashSet allocation.
+                let allArtists =
+                    [seedArtists; similarArtists; labelArtists]
+                    |> List.concat
+                    |> List.fold (fun (seen, acc) artist ->
+                        if Set.contains artist.Id seen then (seen, acc)
+                        else (Set.add artist.Id seen, artist :: acc))
+                        (Set.empty, [])
+                    |> snd
+                    |> List.rev
 
                 let artistReleaseResults =
                     allArtists
@@ -549,6 +690,7 @@ module SyncEngine =
 
                     let discovery: AC.DiscoveryResult =
                         { SeedArtists = seedArtists
+                          SimilarArtists = similarArtists
                           LabelArtists = labelArtists
                           Releases = classifiedReleases }
 
@@ -572,3 +714,7 @@ module SyncEngine =
                               "tracks_removed", string reconcileResult.RemovedCount ])
 
                     snapshot outcome
+
+    let runSync (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
+        let defaultProvider = SimilarArtists.createLastFmProvider config runtime
+        runSyncWithProvider defaultProvider config runtime knownPlaylistIds

@@ -1,0 +1,8 @@
+{
+  "similarartists": {
+    "artist": [
+      { "name": "Burial", "mbid": "9ea80bb8-4bcb-4188-9e0d-4156b187c6f9", "match": "0.77" },
+      { "name": " Four   Tet ", "mbid": "f64deeb5-14e1-4c10-9ecf-18cf7f4de2bd", "match": "0.74" }
+    ]
+  }
+}

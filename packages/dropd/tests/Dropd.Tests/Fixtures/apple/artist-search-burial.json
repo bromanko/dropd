@@ -1,0 +1,10 @@
+{
+  "results": {
+    "artists": {
+      "data": [
+        { "id": "14294754", "type": "artists", "attributes": { "name": "Burial" } },
+        { "id": "999", "type": "artists", "attributes": { "name": "Burial (DJ)" } }
+      ]
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "similarartists": {
+    "artist": [
+      { "name": "Burial", "mbid": "9ea80bb8-4bcb-4188-9e0d-4156b187c6f9", "match": "0.91" },
+      { "name": "The  Black  Keys", "mbid": "d15721d3-c0bc-4834-be19-e8d5623cb4b9", "match": "0.88" },
+      { "name": "Bonobo", "mbid": "29525428-8f2e-4f62-9c12-9d4f0f6a9e70", "match": "0.55" },
+      { "name": "NoMatch", "mbid": "", "match": "0.44" }
+    ]
+  }
+}
