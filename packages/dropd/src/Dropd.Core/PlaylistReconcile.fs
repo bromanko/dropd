@@ -183,20 +183,59 @@ module PlaylistReconcile =
     let computePlan
         (today: DateOnly)
         (rollingWindowDays: int)
+        (similarArtistMaxPercent: int)
+        (similarArtistIds: Set<CatalogArtistId>)
         (playlist: Config.PlaylistDefinition)
         (releases: AC.DiscoveredRelease list)
         (existingTracks: ExistingTrack list)
         : AC.PlaylistPlan =
         let criteria = playlist.GenreCriteria |> List.map Normalization.normalizeText |> Set.ofList
 
-        let desiredTrackIds =
+        // Build desired tracks as (trackId, isSimilar) pairs in stable release order.
+        let desiredTracksWithSource =
             releases
             |> List.filter (fun (release: AC.DiscoveredRelease) ->
                 release.GenreNames
                 |> List.map Normalization.normalizeText
                 |> List.exists criteria.Contains)
-            |> List.collect (fun release -> release.TrackIds)
-            |> Normalization.dedupByTrackId
+            |> List.collect (fun release ->
+                let isSimilar = similarArtistIds.Contains release.ArtistId
+                release.TrackIds |> List.map (fun tid -> tid, isSimilar))
+
+        // Deduplicate by track ID, preserving first occurrence.
+        // Uses a fold with an immutable Set to avoid mutable HashSet allocations.
+        let deduped =
+            desiredTracksWithSource
+            |> List.fold
+                (fun (seen, acc) (tid, isSimilar) ->
+                    if Set.contains tid seen then (seen, acc)
+                    else (Set.add tid seen, (tid, isSimilar) :: acc))
+                (Set.empty, [])
+            |> snd
+            |> List.rev
+
+        // Apply similar-artist cap: limit similar tracks to configured percentage.
+        let totalDesired = deduped.Length
+        // Floor-truncated intentionally: for small playlists (e.g. 3 tracks at 30%)
+        // this means 0 similar tracks, erring on the side of seed-artist content.
+        let allowedSimilar =
+            if totalDesired = 0 then 0
+            else int (float similarArtistMaxPercent * float totalDesired / 100.0)
+
+        // Use a fold to make the stateful similar-count tracking explicit and pure.
+        let cappedTracks =
+            deduped
+            |> List.fold
+                (fun (similarCount, acc) (tid, isSimilar) ->
+                    if isSimilar then
+                        if similarCount < allowedSimilar then (similarCount + 1, (tid, isSimilar) :: acc)
+                        else (similarCount, acc)
+                    else (similarCount, (tid, isSimilar) :: acc))
+                (0, [])
+            |> snd
+            |> List.rev
+
+        let desiredTrackIds = cappedTracks |> List.map fst
 
         let existingIds = existingTracks |> List.map (fun track -> track.Id) |> Set.ofList
 
@@ -420,7 +459,14 @@ module PlaylistReconcile =
                                 return None, [], true
                     }
 
-                let plan = computePlan today rollingWindowDays playlist discovery.Releases existingTracks
+                let similarArtistIds =
+                    discovery.SimilarArtists
+                    |> List.map (fun a -> a.Id)
+                    |> Set.ofList
+
+                let similarArtistMaxPercent = config.SimilarArtistMaxPercent |> Config.Percent.value
+
+                let plan = computePlan today rollingWindowDays similarArtistMaxPercent similarArtistIds playlist discovery.Releases existingTracks
                 planAcc.Add plan
 
                 match resolvedId with

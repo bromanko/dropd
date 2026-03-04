@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "id": "sim-album-1",
+      "type": "albums",
+      "attributes": {
+        "name": "Similar Album",
+        "artistId": "14294754",
+        "artistName": "Burial",
+        "releaseDate": "2026-02-20",
+        "genreNames": ["Electronic"]
+      },
+      "relationships": {
+        "tracks": {
+          "data": [
+            { "id": "sim-track-1" },
+            { "id": "sim-track-2" },
+            { "id": "sim-track-3" },
+            { "id": "sim-track-4" },
+            { "id": "sim-track-5" }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "id": "seed-album-1",
+      "type": "albums",
+      "attributes": {
+        "name": "Seed Album",
+        "artistId": "5765078",
+        "artistName": "Bonobo",
+        "releaseDate": "2026-02-20",
+        "genreNames": ["Electronic"]
+      },
+      "relationships": {
+        "tracks": {
+          "data": [
+            { "id": "seed-track-1" },
+            { "id": "seed-track-2" },
+            { "id": "seed-track-3" },
+            { "id": "seed-track-4" },
+            { "id": "seed-track-5" }
+          ]
+        }
+      }
+    }
+  ]
+}

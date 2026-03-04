@@ -266,6 +266,57 @@ let tests =
               Expect.isNonEmpty burialAlbumRequests "fake provider's artist should be resolved and fetched"
 
           // DD-019: Limit tracks from similar artists to configurable max percentage.
-          ptestCase "DD-019 limits similar-artist tracks to configured percentage" <| fun _ -> ()
+          testCase "DD-019 limits similar-artist tracks to configured percentage" <| fun _ ->
+              // Config: SimilarArtistMaxPercent = 20. Playlist with genre "electronic".
+              // Seed artist Bonobo returns 5 electronic tracks.
+              // Similar artist Burial returns 5 electronic tracks.
+              // Total desired = 10. Cap = 20% = 2 similar tracks max.
+              let cfg =
+                  { validConfig with
+                      SimilarArtistMaxPercent = 20
+                      LabelNames = []
+                      Playlists = [ { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] } ] }
+
+              // Use a fake provider that returns only Burial as similar.
+              let fakeProvider : AC.SimilarArtistProvider =
+                  { Name = "FakeProvider"
+                    GetSimilar =
+                      fun (_artistName, _mbid) ->
+                          async { return Ok [ { Name = "Burial"; Mbid = None } ] } }
+
+              let setup =
+                  setupWith
+                      [ route "apple" "GET" "/v1/me/library/artists" [] (Always(okFixture "library-artists.json"))
+                        route "apple" "GET" "/v1/me/ratings/artists" [ "ids", "657515,5765078" ] (Always(okFixture "favorited-artists.json"))
+                        // Seed artists return the seed cap fixture (5 electronic tracks from Bonobo)
+                        route "apple" "GET" "/v1/catalog/us/artists/657515/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-seed-cap.json"))
+                        route "apple" "GET" "/v1/catalog/us/artists/5765078/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-seed-cap.json"))
+                        route "apple" "GET" "/v1/catalog/us/artists/29525428/albums" [ "sort", "-releaseDate" ] (Always(withStatus 200 """{"data":[]}"""))
+                        // Resolve Burial from Apple search
+                        route "apple" "GET" "/v1/catalog/us/search" [ "term", "Burial"; "types", "artists" ] (Always(okFixture "artist-search-burial.json"))
+                        // Similar artist (Burial) returns 5 electronic tracks
+                        route "apple" "GET" "/v1/catalog/us/artists/14294754/albums" [ "sort", "-releaseDate" ] (Always(okFixture "artist-albums-similar-cap.json"))
+                        // Playlist routes
+                        route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 """{"data":[]}"""))
+                        route "apple" "POST" "/v1/me/library/playlists" [] (Always(withStatus 201 """{"data":[{"id":"p.new","type":"library-playlists","attributes":{"name":"Electronic Drops"}}]}"""))
+                        route "apple" "POST" "/v1/me/library/playlists/p.new/tracks" [] (Always(withStatus 200 "{}")) ]
+
+              let output = runSyncWithProvider fakeProvider cfg setup
+
+              // Find the POST to add tracks and check its body.
+              let addReqs =
+                  output.Requests
+                  |> List.filter (fun req -> req.Method = "POST" && req.Path.EndsWith("/tracks"))
+
+              Expect.isNonEmpty addReqs "should have made a track-add request"
+
+              let body = addReqs.Head.Body |> Option.defaultValue ""
+              // Count how many sim-track-* IDs appear in the body.
+              let simTrackCount =
+                  [ "sim-track-1"; "sim-track-2"; "sim-track-3"; "sim-track-4"; "sim-track-5" ]
+                  |> List.filter (fun id -> body.Contains(id))
+                  |> List.length
+
+              Expect.isTrue (simTrackCount <= 2) $"at most 2 similar tracks in playlist (20%% of 10), got {simTrackCount}"
 
           ]

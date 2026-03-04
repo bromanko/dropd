@@ -74,6 +74,8 @@ let tests =
                   PlaylistReconcile.computePlan
                       (DateOnly(2026, 3, 1))
                       30
+                      100
+                      Set.empty
                       { Name = "Electronic Drops"
                         GenreCriteria = [ "electronic" ] }
                       discovery.Releases
@@ -97,6 +99,8 @@ let tests =
                   PlaylistReconcile.computePlan
                       (DateOnly(2026, 3, 1))
                       30
+                      100
+                      Set.empty
                       { Name = "Electronic Drops"
                         GenreCriteria = [ "electronic" ] }
                       [ duplicateRelease ]
@@ -116,6 +120,8 @@ let tests =
                   PlaylistReconcile.computePlan
                       (DateOnly(2026, 3, 1))
                       30
+                      100
+                      Set.empty
                       { Name = "Dance Floor"
                         GenreCriteria = [ "dance" ] }
                       discovery.Releases
@@ -130,6 +136,8 @@ let tests =
                   PlaylistReconcile.computePlan
                       (DateOnly(2026, 3, 1))
                       30
+                      100
+                      Set.empty
                       { Name = "Electronic Drops"
                         GenreCriteria = [ "electronic" ] }
                       [] // no releases
@@ -150,6 +158,8 @@ let tests =
                   PlaylistReconcile.computePlan
                       (DateOnly(2026, 3, 1))
                       30
+                      100
+                      Set.empty
                       { Name = "Electronic Drops"
                         GenreCriteria = [ "electronic" ] }
                       discovery.Releases
@@ -229,4 +239,289 @@ let tests =
                   (state.Requests
                    |> List.exists (fun request -> request.Method = "POST" && request.Path = "/v1/me/library/playlists" && request.Body.IsSome && request.Body.Value.Contains("\"Two\"")))
                   "second playlist should still be processed"
+        ]
+
+[<Tests>]
+let similarCapTests =
+    testList
+        "Unit.PlaylistReconcile.SimilarCap"
+        [
+          testCase "cap limits similar tracks to configured percentage"
+          <| fun _ ->
+              // 10 total tracks: 5 from similar artist, 5 from seed artist. Cap = 20%.
+              // allowedSimilar = floor(20 * 10 / 100) = 2
+              let similarArtistId = CatalogArtistId "similar-1"
+              let seedArtistId = CatalogArtistId "seed-1"
+
+              let releases : AC.DiscoveredRelease list =
+                  [ // 5 seed tracks
+                    { Id = CatalogAlbumId "seed-album"
+                      ArtistId = seedArtistId
+                      ArtistName = "SeedArtist"
+                      Name = "SeedAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"seed-t{i}" ] }
+                    // 5 similar tracks
+                    { Id = CatalogAlbumId "sim-album"
+                      ArtistId = similarArtistId
+                      ArtistName = "SimilarArtist"
+                      Name = "SimAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"sim-t{i}" ] } ]
+
+              let plan =
+                  PlaylistReconcile.computePlan
+                      (DateOnly(2026, 3, 1))
+                      30
+                      20  // 20% cap
+                      (Set.ofList [ similarArtistId ])
+                      { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
+                      releases
+                      []
+
+              let similarTracks =
+                  plan.AddTracks |> List.filter (fun (CatalogTrackId id) -> id.StartsWith "sim-")
+              let seedTracks =
+                  plan.AddTracks |> List.filter (fun (CatalogTrackId id) -> id.StartsWith "seed-")
+
+              Expect.isTrue (similarTracks.Length <= 2) $"at most 2 similar tracks allowed, got {similarTracks.Length}"
+              Expect.equal seedTracks.Length 5 "all seed tracks should be present"
+
+          testCase "repeated runs are deterministic"
+          <| fun _ ->
+              let similarArtistId = CatalogArtistId "similar-1"
+              let releases : AC.DiscoveredRelease list =
+                  [ { Id = CatalogAlbumId "seed-album"
+                      ArtistId = CatalogArtistId "seed-1"
+                      ArtistName = "SeedArtist"
+                      Name = "SeedAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"seed-t{i}" ] }
+                    { Id = CatalogAlbumId "sim-album"
+                      ArtistId = similarArtistId
+                      ArtistName = "SimilarArtist"
+                      Name = "SimAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"sim-t{i}" ] } ]
+
+              let makePlan () =
+                  PlaylistReconcile.computePlan
+                      (DateOnly(2026, 3, 1))
+                      30
+                      20
+                      (Set.ofList [ similarArtistId ])
+                      { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
+                      releases
+                      []
+
+              let plan1 = makePlan()
+              let plan2 = makePlan()
+
+              Expect.equal plan1.AddTracks plan2.AddTracks "same inputs should produce same output"
+
+          testCase "non-similar tracks are never removed to satisfy cap"
+          <| fun _ ->
+              let similarArtistId = CatalogArtistId "similar-1"
+              let seedArtistId = CatalogArtistId "seed-1"
+
+              let releases : AC.DiscoveredRelease list =
+                  [ { Id = CatalogAlbumId "seed-album"
+                      ArtistId = seedArtistId
+                      ArtistName = "SeedArtist"
+                      Name = "SeedAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..8 -> CatalogTrackId $"seed-t{i}" ] }
+                    { Id = CatalogAlbumId "sim-album"
+                      ArtistId = similarArtistId
+                      ArtistName = "SimilarArtist"
+                      Name = "SimAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..2 -> CatalogTrackId $"sim-t{i}" ] } ]
+
+              let plan =
+                  PlaylistReconcile.computePlan
+                      (DateOnly(2026, 3, 1))
+                      30
+                      10  // 10% cap, so 1 similar out of 10 total
+                      (Set.ofList [ similarArtistId ])
+                      { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
+                      releases
+                      []
+
+              let seedTracks =
+                  plan.AddTracks |> List.filter (fun (CatalogTrackId id) -> id.StartsWith "seed-")
+
+              // All 8 seed tracks must be present regardless of cap
+              Expect.equal seedTracks.Length 8 "all non-similar tracks must be included"
+
+          testCase "cap of 0 percent excludes all similar tracks"
+          <| fun _ ->
+              let similarArtistId = CatalogArtistId "similar-1"
+              let seedArtistId = CatalogArtistId "seed-1"
+
+              let releases : AC.DiscoveredRelease list =
+                  [ { Id = CatalogAlbumId "seed-album"
+                      ArtistId = seedArtistId
+                      ArtistName = "SeedArtist"
+                      Name = "SeedAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"seed-t{i}" ] }
+                    { Id = CatalogAlbumId "sim-album"
+                      ArtistId = similarArtistId
+                      ArtistName = "SimilarArtist"
+                      Name = "SimAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"sim-t{i}" ] } ]
+
+              let plan =
+                  PlaylistReconcile.computePlan
+                      (DateOnly(2026, 3, 1))
+                      30
+                      0  // 0% cap
+                      (Set.ofList [ similarArtistId ])
+                      { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
+                      releases
+                      []
+
+              let simTracks = plan.AddTracks |> List.filter (fun (CatalogTrackId id) -> id.StartsWith "sim-")
+              Expect.equal simTracks.Length 0 "0% cap should exclude all similar tracks"
+              let seedTracks = plan.AddTracks |> List.filter (fun (CatalogTrackId id) -> id.StartsWith "seed-")
+              Expect.equal seedTracks.Length 5 "all seed tracks should remain"
+
+          testCase "cap of 100 percent includes all similar tracks"
+          <| fun _ ->
+              let similarArtistId = CatalogArtistId "similar-1"
+              let seedArtistId = CatalogArtistId "seed-1"
+
+              let releases : AC.DiscoveredRelease list =
+                  [ { Id = CatalogAlbumId "seed-album"
+                      ArtistId = seedArtistId
+                      ArtistName = "SeedArtist"
+                      Name = "SeedAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"seed-t{i}" ] }
+                    { Id = CatalogAlbumId "sim-album"
+                      ArtistId = similarArtistId
+                      ArtistName = "SimilarArtist"
+                      Name = "SimAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"sim-t{i}" ] } ]
+
+              let plan =
+                  PlaylistReconcile.computePlan
+                      (DateOnly(2026, 3, 1))
+                      30
+                      100  // 100% cap
+                      (Set.ofList [ similarArtistId ])
+                      { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
+                      releases
+                      []
+
+              let simTracks = plan.AddTracks |> List.filter (fun (CatalogTrackId id) -> id.StartsWith "sim-")
+              Expect.equal simTracks.Length 5 "100% cap should include all similar tracks"
+
+          testCase "cap of 1 percent with small total truncates to 0 similar tracks"
+          <| fun _ ->
+              let similarArtistId = CatalogArtistId "similar-1"
+              let seedArtistId = CatalogArtistId "seed-1"
+
+              let releases : AC.DiscoveredRelease list =
+                  [ { Id = CatalogAlbumId "seed-album"
+                      ArtistId = seedArtistId
+                      ArtistName = "SeedArtist"
+                      Name = "SeedAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..3 -> CatalogTrackId $"seed-t{i}" ] }
+                    { Id = CatalogAlbumId "sim-album"
+                      ArtistId = similarArtistId
+                      ArtistName = "SimilarArtist"
+                      Name = "SimAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..2 -> CatalogTrackId $"sim-t{i}" ] } ]
+
+              let plan =
+                  PlaylistReconcile.computePlan
+                      (DateOnly(2026, 3, 1))
+                      30
+                      1  // 1% cap, total = 5, allowedSimilar = floor(1*5/100) = 0
+                      (Set.ofList [ similarArtistId ])
+                      { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
+                      releases
+                      []
+
+              let simTracks = plan.AddTracks |> List.filter (fun (CatalogTrackId id) -> id.StartsWith "sim-")
+              Expect.equal simTracks.Length 0 "1% cap with 5 tracks should floor-truncate to 0 similar tracks"
+
+          testCase "cap of 50 percent allows exactly half"
+          <| fun _ ->
+              let similarArtistId = CatalogArtistId "similar-1"
+              let seedArtistId = CatalogArtistId "seed-1"
+
+              let releases : AC.DiscoveredRelease list =
+                  [ { Id = CatalogAlbumId "seed-album"
+                      ArtistId = seedArtistId
+                      ArtistName = "SeedArtist"
+                      Name = "SeedAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"seed-t{i}" ] }
+                    { Id = CatalogAlbumId "sim-album"
+                      ArtistId = similarArtistId
+                      ArtistName = "SimilarArtist"
+                      Name = "SimAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..5 -> CatalogTrackId $"sim-t{i}" ] } ]
+
+              let plan =
+                  PlaylistReconcile.computePlan
+                      (DateOnly(2026, 3, 1))
+                      30
+                      50  // 50% cap, total = 10, allowedSimilar = 5
+                      (Set.ofList [ similarArtistId ])
+                      { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
+                      releases
+                      []
+
+              let simTracks = plan.AddTracks |> List.filter (fun (CatalogTrackId id) -> id.StartsWith "sim-")
+              Expect.equal simTracks.Length 5 "50% of 10 = 5 similar tracks allowed"
+
+          testCase "cap applies even when all tracks are from similar artists"
+          <| fun _ ->
+              // No seed artist tracks — all 10 tracks from similar artists.
+              // 20% cap: allowedSimilar = floor(20 * 10 / 100) = 2
+              let similarArtistId = CatalogArtistId "similar-1"
+
+              let releases : AC.DiscoveredRelease list =
+                  [ { Id = CatalogAlbumId "sim-album"
+                      ArtistId = similarArtistId
+                      ArtistName = "SimilarArtist"
+                      Name = "SimAlbum"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ for i in 1..10 -> CatalogTrackId $"sim-t{i}" ] } ]
+
+              let plan =
+                  PlaylistReconcile.computePlan
+                      (DateOnly(2026, 3, 1))
+                      30
+                      20  // 20% cap
+                      (Set.ofList [ similarArtistId ])
+                      { Name = "Electronic Drops"; GenreCriteria = [ "electronic" ] }
+                      releases
+                      []
+
+              Expect.equal plan.AddTracks.Length 2 "only 20% of 10 = 2 similar tracks allowed with no seed tracks"
         ]
