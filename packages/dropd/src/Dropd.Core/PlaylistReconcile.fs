@@ -22,43 +22,44 @@ module PlaylistReconcile =
     let private trackIdValue (CatalogTrackId value) = value
     let private withTrackId value = CatalogTrackId value
 
-    let private parseNextLink (body: string) : string option =
-        use document = JsonDocument.Parse(body)
-        tryGetString "next" document.RootElement
+    let private tryParseExistingTrack (item: JsonElement) : ExistingTrack option =
+        let attrs = item |> tryGetProperty "attributes"
 
-    let private parseExistingTracks (body: string) : ExistingTrack list =
-        use document = JsonDocument.Parse(body)
+        // Library playlist tracks have library-scoped IDs (e.g. "i.Mla0tqxJ0Q")
+        // at the top level, but the catalog ID we need for dedup lives at
+        // attributes.playParams.catalogId.  Fall back to the top-level id when
+        // catalogId is absent (e.g. in test fixtures).
+        let catalogId =
+            attrs
+            |> Option.bind (tryGetProperty "playParams")
+            |> Option.bind (tryGetString "catalogId")
+            |> Option.orElse (tryGetString "id" item)
 
-        let data =
-            match tryGetProperty "data" document.RootElement with
-            | Some value when value.ValueKind = JsonValueKind.Array -> value.EnumerateArray() |> Seq.toList
+        match catalogId with
+        | None -> None
+        | Some id ->
+            let releaseDate =
+                attrs
+                |> Option.bind (tryGetString "releaseDate")
+                |> Option.bind tryParseDateOnly
+
+            Some
+                { Id = withTrackId id
+                  ReleaseDate = releaseDate }
+
+    let private parseExistingTracksPage (body: string) : ExistingTrack list * string option =
+        use document = JsonDocument.Parse(body)
+        let root = document.RootElement
+
+        let tracks =
+            match tryGetProperty "data" root with
+            | Some value when value.ValueKind = JsonValueKind.Array ->
+                value.EnumerateArray()
+                |> Seq.choose tryParseExistingTrack
+                |> Seq.toList
             | _ -> []
 
-        data
-        |> List.choose (fun item ->
-            let attrs = item |> tryGetProperty "attributes"
-
-            // Library playlist tracks have library-scoped IDs (e.g. "i.Mla0tqxJ0Q")
-            // at the top level, but the catalog ID we need for dedup lives at
-            // attributes.playParams.catalogId.  Fall back to the top-level id when
-            // catalogId is absent (e.g. in test fixtures).
-            let catalogId =
-                attrs
-                |> Option.bind (tryGetProperty "playParams")
-                |> Option.bind (tryGetString "catalogId")
-                |> Option.orElse (tryGetString "id" item)
-
-            match catalogId with
-            | None -> None
-            | Some id ->
-                let releaseDate =
-                    attrs
-                    |> Option.bind (tryGetString "releaseDate")
-                    |> Option.bind tryParseDateOnly
-
-                Some
-                    { Id = withTrackId id
-                      ReleaseDate = releaseDate })
+        tracks, (tryGetString "next" root)
 
     let private playlistTracksPath (playlistId: string) =
         $"/v1/me/library/playlists/{playlistId}/tracks"

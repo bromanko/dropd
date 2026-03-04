@@ -65,32 +65,60 @@ module SyncEngine =
 
                 Some { Id = withArtistId id; Name = name })
 
+    let private parseDataArrayAndTopLevelNext
+        (body: string)
+        (chooser: JsonElement -> 'a option)
+        : 'a list * string option =
+        use document = JsonDocument.Parse(body)
+        let root = document.RootElement
+
+        let items =
+            match tryGetProperty "data" root with
+            | Some data when data.ValueKind = JsonValueKind.Array ->
+                let results = ResizeArray()
+                let mutable enumerator = data.EnumerateArray()
+
+                while enumerator.MoveNext() do
+                    match chooser enumerator.Current with
+                    | Some x -> results.Add(x)
+                    | None -> ()
+
+                Seq.toList results
+            | _ -> []
+
+        items, (tryGetString "next" root)
+
+    let private tryParseLibraryArtistWithCatalog (item: JsonElement) : Artist option =
+        item
+        |> tryGetProperty "relationships"
+        |> Option.bind (tryGetProperty "catalog")
+        |> Option.bind (tryGetProperty "data")
+        |> Option.bind (fun data ->
+            if data.ValueKind = JsonValueKind.Array then
+                data.EnumerateArray() |> Seq.tryHead
+            else
+                None)
+        |> Option.bind (fun catalogItem ->
+            match tryGetString "id" catalogItem with
+            | None -> None
+            | Some catalogId ->
+                let name =
+                    catalogItem
+                    |> tryGetProperty "attributes"
+                    |> Option.bind (tryGetString "name")
+                    |> Option.defaultValue catalogId
+
+                Some { Id = withArtistId catalogId; Name = name })
+
     /// Parse the library artist response (with `include=catalog`) and extract
     /// catalog artist IDs and names from the `relationships.catalog.data` array.
     /// Library artists whose catalog relationship is missing or empty are skipped
     /// because their IDs cannot be used for catalog or ratings API calls.
     let private parseLibraryArtistsWithCatalog (body: string) : Artist list =
-        parseDataArray body (fun item ->
-            item
-            |> tryGetProperty "relationships"
-            |> Option.bind (tryGetProperty "catalog")
-            |> Option.bind (tryGetProperty "data")
-            |> Option.bind (fun data ->
-                if data.ValueKind = JsonValueKind.Array then
-                    data.EnumerateArray() |> Seq.tryHead
-                else
-                    None)
-            |> Option.bind (fun catalogItem ->
-                match tryGetString "id" catalogItem with
-                | None -> None
-                | Some catalogId ->
-                    let name =
-                        catalogItem
-                        |> tryGetProperty "attributes"
-                        |> Option.bind (tryGetString "name")
-                        |> Option.defaultValue catalogId
+        parseDataArray body tryParseLibraryArtistWithCatalog
 
-                    Some { Id = withArtistId catalogId; Name = name }))
+    let private parseLibraryArtistsWithCatalogPage (body: string) : Artist list * string option =
+        parseDataArrayAndTopLevelNext body tryParseLibraryArtistWithCatalog
 
     /// Parse the `/v1/me/ratings/artists` response and return artist IDs that
     /// have a positive rating (value = 1). The response contains rating objects
@@ -166,6 +194,9 @@ module SyncEngine =
 
     let private parseReleaseList (body: string) : AC.DiscoveredRelease list =
         parseDataArray body parseRelease
+
+    let private parseReleasePage (body: string) : AC.DiscoveredRelease list * string option =
+        parseDataArrayAndTopLevelNext body parseRelease
 
     let private execute (runtime: AC.ApiRuntime) (request: AC.ApiRequest) = runtime.Execute request |> Async.RunSynchronously
 
@@ -391,8 +422,14 @@ module SyncEngine =
         let logs = List.rev logsRev
         artists |> List.distinctBy (fun artist -> artist.Id), releases, logs
 
-    let fetchArtistReleases (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (artistId: CatalogArtistId) (appendLog: AC.LogLevel -> string -> string -> Map<string, string> -> unit) =
-        let path = $"/v1/catalog/{config.Storefront}/artists/{artistIdValue artistId}/albums"
+    let fetchArtistReleases
+        (config: Config.ValidSyncConfig)
+        (runtime: AC.ApiRuntime)
+        (artistId: CatalogArtistId)
+        (appendLog: AC.LogLevel -> string -> string -> Map<string, string> -> unit)
+        : Async<Result<AC.DiscoveredRelease list, AC.ApiResponse>> =
+        async {
+            let path = $"/v1/catalog/{config.Storefront}/artists/{artistIdValue artistId}/albums"
 
             let firstRequest : AC.ApiRequest =
                 { Service = AC.AppleMusic
@@ -672,245 +709,265 @@ module SyncEngine =
             if isSensitiveQueryParam name then name, "[redacted]"
             else name, value)
 
-    let private runSyncInternal (providerOpt: AC.SimilarArtistProvider option) (delayFn: int -> Async<unit>) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
-        let recordedRequests = ResizeArray<AC.ApiRequest>()
-        let recordedLogs = ResizeArray<AC.LogEntry>()
+    let private runSyncInternal
+        (providerOpt: AC.SimilarArtistProvider option)
+        (delayFn: int -> Async<unit>)
+        (config: Config.ValidSyncConfig)
+        (runtime: AC.ApiRuntime)
+        (knownPlaylistIds: Map<string, string>)
+        : Async<Types.SyncOutcome * AC.ObservedSync> =
+        async {
+            let recordedRequests = ResizeArray<AC.ApiRequest>()
+            let recordedLogs = ResizeArray<AC.LogEntry>()
 
-        // Pipeline setup: recording wraps the original runtime so every request
-        // (including retries) is captured. The resilient pipeline then wraps the
-        // recording runtime to add retry/rate-limit/guard behaviour.
-        //
-        // Flow: caller → resilientRuntime (retries/guards) →
-        //       runtimeWithRecording (captures requests) → original runtime
+            // Pipeline setup: recording wraps the original runtime so every request
+            // (including retries) is captured. The resilient pipeline then wraps the
+            // recording runtime to add retry/rate-limit/guard behaviour.
+            //
+            // Flow: caller → resilientRuntime (retries/guards) →
+            //       runtimeWithRecording (captures requests) → original runtime
 
-        let runtimeWithRecording: AC.ApiRuntime =
-            { runtime with
-                Execute =
-                    (fun request ->
-                        async {
-                            // Finding 16: store a copy with redacted auth header values
-                            // and sensitive query parameters (e.g. api_key) so tokens
-                            // are not retained in the observable log.
-                            let safeRequest =
-                                { request with
-                                    Headers = redactHeaders request.Headers
-                                    Query = redactQueryParams request.Query }
-                            recordedRequests.Add safeRequest
-                            return! runtime.Execute request
-                        }) }
+            let runtimeWithRecording: AC.ApiRuntime =
+                { runtime with
+                    Execute =
+                        (fun request ->
+                            async {
+                                // Finding 16: store a copy with redacted auth header values
+                                // and sensitive query parameters (e.g. api_key) so tokens
+                                // are not retained in the observable log.
+                                let safeRequest =
+                                    { request with
+                                        Headers = redactHeaders request.Headers
+                                        Query = redactQueryParams request.Query }
+                                recordedRequests.Add safeRequest
+                                return! runtime.Execute request
+                            }) }
 
-        let pipelineConfig = ResilientPipeline.configFrom config
-        let pipelineStats = ResilientPipeline.createStats ()
+            let pipelineConfig = ResilientPipeline.configFrom config
+            let pipelineStats = ResilientPipeline.createStats ()
 
-        let resilientRuntime =
-            ResilientPipeline.wrap
-                pipelineConfig
-                pipelineStats
-                delayFn
-                recordedLogs.Add
-                None
-                runtimeWithRecording
+            let resilientRuntime =
+                ResilientPipeline.wrap
+                    pipelineConfig
+                    pipelineStats
+                    delayFn
+                    recordedLogs.Add
+                    None
+                    runtimeWithRecording
 
-        // Create the provider using the resilient runtime so Last.fm requests
-        // go through recording + retry.
-        let provider =
-            match providerOpt with
-            | Some p -> p
-            | None -> SimilarArtists.createLastFmProvider config resilientRuntime
+            // Create the provider using the resilient runtime so Last.fm requests
+            // go through recording + retry.
+            let provider =
+                match providerOpt with
+                | Some p -> p
+                | None -> SimilarArtists.createLastFmProvider config resilientRuntime
 
-        let appendLog level code message data = recordedLogs.Add(mkLog level code message data)
-        let appendLogs logs = logs |> List.iter recordedLogs.Add
-        let mutable resolvedPlaylistIds = Map.empty
+            let appendLog level code message data = recordedLogs.Add(mkLog level code message data)
+            let appendLogs logs = logs |> List.iter recordedLogs.Add
+            let mutable resolvedPlaylistIds = Map.empty
 
-        let snapshot outcome =
-            appendLog AC.Info "SyncOutcome" "Sync finished." (Map [ "outcome", outcomeToText outcome ])
+            let snapshot outcome =
+                appendLog AC.Info "SyncOutcome" "Sync finished." (Map [ "outcome", outcomeToText outcome ])
 
-            let observed: AC.ObservedSync =
-                { Requests = recordedRequests |> Seq.toList
-                  Logs = recordedLogs |> Seq.toList
-                  ResolvedPlaylistIds = resolvedPlaylistIds }
+                let observed: AC.ObservedSync =
+                    { Requests = recordedRequests |> Seq.toList
+                      Logs = recordedLogs |> Seq.toList
+                      ResolvedPlaylistIds = resolvedPlaylistIds }
 
-            outcome, observed
+                outcome, observed
 
-        let abort reason = snapshot (Aborted reason)
+            let abort reason = snapshot (Aborted reason)
 
-        let maybeAuthAbort path (response: AC.ApiResponse) =
-            if response.StatusCode = 401 then
-                appendLog
-                    AC.Error
-                    "AppleMusicAuthFailure"
-                    "Apple Music authentication failed."
-                    (Map
-                        [ "endpoint", path
-                          "status", string response.StatusCode
-                          // Finding 15: truncate body before logging.
-                          "message", truncateBody response.Body ])
-
-                Some "AuthFailure"
-            elif path.StartsWith("/v1/me", StringComparison.OrdinalIgnoreCase) && response.StatusCode = 403 then
-                appendLog
-                    AC.Error
-                    "AppleMusicAuthFailure"
-                    "Music User Token re-authorization required."
-                    (Map
-                        [ "endpoint", path
-                          "status", string response.StatusCode
-                          // Finding 15: truncate body before logging.
-                          "message", truncateBody response.Body ])
-
-                Some "AuthFailure"
-            else
-                None
-
-        appendLog AC.Info "SyncStarted" "Sync started." Map.empty
-
-        try
-
-        match fetchLibraryArtists config resilientRuntime appendLog with
-        | Error response ->
-            match maybeAuthAbort "/v1/me/library/artists" response with
-            | Some reason -> abort reason
-            | None ->
-                appendLog
-                    AC.Error
-                    "ApiFailure"
-                    "Failed to retrieve library artists."
-                    (Map
-                        [ "endpoint", "/v1/me/library/artists"
-                          "status", string response.StatusCode
-                          "message", truncateBody response.Body ])
-
-                abort "LibraryArtistsFailed"
-        | Ok libraryArtists ->
-            match fetchFavoritedArtists config resilientRuntime libraryArtists with
-            | Error response ->
-                match maybeAuthAbort "/v1/me/ratings/artists" response with
-                | Some reason -> abort reason
-                | None ->
+            let maybeAuthAbort path (response: AC.ApiResponse) =
+                if response.StatusCode = 401 then
                     appendLog
                         AC.Error
-                        "ApiFailure"
-                        "Failed to retrieve favorited artists."
+                        "AppleMusicAuthFailure"
+                        "Apple Music authentication failed."
                         (Map
-                            [ "endpoint", "/v1/me/ratings/artists"
+                            [ "endpoint", path
                               "status", string response.StatusCode
+                              // Finding 15: truncate body before logging.
                               "message", truncateBody response.Body ])
 
-                    abort "FavoritedArtistsFailed"
-            | Ok favoritedArtists ->
-                let seedArtists = buildSeedArtists libraryArtists favoritedArtists
-                let labelArtists, labelReleases, labelLogs = resolveLabels config resilientRuntime
-                appendLogs labelLogs
+                    Some "AuthFailure"
+                elif path.StartsWith("/v1/me", StringComparison.OrdinalIgnoreCase) && response.StatusCode = 403 then
+                    appendLog
+                        AC.Error
+                        "AppleMusicAuthFailure"
+                        "Music User Token re-authorization required."
+                        (Map
+                            [ "endpoint", path
+                              "status", string response.StatusCode
+                              // Finding 15: truncate body before logging.
+                              "message", truncateBody response.Body ])
 
-                // -- Similar-artist discovery (Phase 2) --
-                let similarArtists = discoverSimilarArtists provider config resilientRuntime seedArtists appendLog
+                    Some "AuthFailure"
+                else
+                    None
 
-                // Single-pass dedup avoids intermediate @ concatenations and extra HashSet allocation.
-                let allArtists =
-                    [seedArtists; similarArtists; labelArtists]
-                    |> List.concat
-                    |> List.fold (fun (seen, acc) artist ->
-                        if Set.contains artist.Id seen then (seen, acc)
-                        else (Set.add artist.Id seen, artist :: acc))
-                        (Set.empty, [])
-                    |> snd
-                    |> List.rev
+            appendLog AC.Info "SyncStarted" "Sync started." Map.empty
 
-                let artistReleaseResults =
-                    allArtists
-                    |> List.map (fun artist -> artist, fetchArtistReleases config resilientRuntime artist.Id appendLog)
+            try
+                let! libraryArtistsResult = fetchLibraryArtists config resilientRuntime appendLog
 
-                let fatalCatalogError =
-                    artistReleaseResults
-                    |> List.tryPick (fun (artist, result) ->
-                        match result with
-                        | Ok _ -> None
-                        | Error response ->
+                match libraryArtistsResult with
+                | Error response ->
+                    match maybeAuthAbort "/v1/me/library/artists" response with
+                    | Some reason -> return abort reason
+                    | None ->
+                        appendLog
+                            AC.Error
+                            "ApiFailure"
+                            "Failed to retrieve library artists."
+                            (Map
+                                [ "endpoint", "/v1/me/library/artists"
+                                  "status", string response.StatusCode
+                                  "message", truncateBody response.Body ])
+
+                        return abort "LibraryArtistsFailed"
+
+                | Ok libraryArtists ->
+                    match fetchFavoritedArtists config resilientRuntime libraryArtists with
+                    | Error response ->
+                        match maybeAuthAbort "/v1/me/ratings/artists" response with
+                        | Some reason -> return abort reason
+                        | None ->
                             appendLog
                                 AC.Error
                                 "ApiFailure"
-                                "Failed to query Apple Music catalog releases."
+                                "Failed to retrieve favorited artists."
                                 (Map
-                                    [ "artist", artist.Name
-                                      "endpoint", $"/v1/catalog/{config.Storefront}/artists/{artistIdValue artist.Id}/albums"
+                                    [ "endpoint", "/v1/me/ratings/artists"
                                       "status", string response.StatusCode
                                       "message", truncateBody response.Body ])
 
-                            if response.StatusCode >= 500 then Some response else None)
+                            return abort "FavoritedArtistsFailed"
 
-                match fatalCatalogError with
-                | Some _ -> abort "CatalogUnavailable"
-                | None ->
-                    let artistReleases =
-                        artistReleaseResults
-                        |> List.choose (fun (_, result) -> match result with | Ok releases -> Some releases | Error _ -> None)
-                        |> List.collect id
+                    | Ok favoritedArtists ->
+                        let seedArtists = buildSeedArtists libraryArtists favoritedArtists
+                        let labelArtists, labelReleases, labelLogs = resolveLabels config resilientRuntime
+                        appendLogs labelLogs
 
-                    let today = resilientRuntime.UtcNow() |> fun now -> DateOnly.FromDateTime(now.UtcDateTime)
-                    let lookbackDays = config.LookbackDays |> Config.PositiveInt.value
+                        // -- Similar-artist discovery (Phase 2) --
+                        let similarArtists = discoverSimilarArtists provider config resilientRuntime seedArtists appendLog
 
-                    let candidateReleases =
-                        labelReleases @ artistReleases
-                        |> filterByLookback today lookbackDays
-                        |> dedupReleases
+                        // Single-pass dedup avoids intermediate @ concatenations and extra HashSet allocation.
+                        let allArtists =
+                            [seedArtists; similarArtists; labelArtists]
+                            |> List.concat
+                            |> List.fold (fun (seen, acc) artist ->
+                                if Set.contains artist.Id seen then (seen, acc)
+                                else (Set.add artist.Id seen, artist :: acc))
+                                (Set.empty, [])
+                            |> snd
+                            |> List.rev
 
-                    let classifiedReleases, classifyLogs = classifyByGenres config resilientRuntime candidateReleases
-                    appendLogs classifyLogs
+                        let! artistReleaseResults =
+                            async {
+                                let results = ResizeArray<AC.DiscoveredArtist * Result<AC.DiscoveredRelease list, AC.ApiResponse>>()
 
-                    // -- Artist dislike filtering (Phase 2) --
-                    // Fetch song and album ratings concurrently since they are independent.
-                    let excludedArtists =
-                        let songResultAsync = async { return fetchSongRatings config resilientRuntime }
-                        let albumResultAsync = async { return fetchAlbumRatings config resilientRuntime }
-                        let results = Async.Parallel [| songResultAsync; albumResultAsync |] |> Async.RunSynchronously
-                        let songResult, albumResult = results.[0], results.[1]
-                        match songResult, albumResult with
-                        | Ok songBody, Ok albumBody ->
-                            let excluded = collectExcludedArtists songBody albumBody
-                            excluded |> Set.iter (fun artist ->
-                                appendLog
-                                    AC.Info
-                                    "ExcludedDislikedArtist"
-                                    $"Excluded disliked artist from playlist population."
-                                    (Map [ "artist", artist ]))
-                            excluded
-                        | Error _, _ | _, Error _ ->
-                            // Non-fatal: if ratings retrieval fails, skip filtering.
-                            Set.empty
+                                for artist in allArtists do
+                                    let! releaseResult = fetchArtistReleases config resilientRuntime artist.Id appendLog
+                                    results.Add(artist, releaseResult)
 
-                    let filteredReleases = filterByExcludedArtists excludedArtists classifiedReleases
+                                return results |> Seq.toList
+                            }
 
-                    let discovery: AC.DiscoveryResult =
-                        { SeedArtists = seedArtists
-                          SimilarArtists = similarArtists
-                          LabelArtists = labelArtists
-                          Releases = filteredReleases }
+                        let fatalCatalogError =
+                            artistReleaseResults
+                            |> List.tryPick (fun (artist, result) ->
+                                match result with
+                                | Ok _ -> None
+                                | Error response ->
+                                    appendLog
+                                        AC.Error
+                                        "ApiFailure"
+                                        "Failed to query Apple Music catalog releases."
+                                        (Map
+                                            [ "artist", artist.Name
+                                              "endpoint", $"/v1/catalog/{config.Storefront}/artists/{artistIdValue artist.Id}/albums"
+                                              "status", string response.StatusCode
+                                              "message", truncateBody response.Body ])
 
-                    // reconcilePlaylists now returns Async; run it synchronously
-                    // at this single top-level call site (Finding 1 / 8).
-                    let reconcileResult, reconcileLogs =
-                        PlaylistReconcile.reconcilePlaylists config discovery resilientRuntime knownPlaylistIds
-                        |> Async.RunSynchronously
+                                    if response.StatusCode >= 500 then Some response else None)
 
-                    appendLogs reconcileLogs
-                    resolvedPlaylistIds <- reconcileResult.ResolvedPlaylistIds
+                        match fatalCatalogError with
+                        | Some _ -> return abort "CatalogUnavailable"
+                        | None ->
+                            let artistReleases =
+                                artistReleaseResults
+                                |> List.choose (fun (_, result) ->
+                                    match result with
+                                    | Ok releases -> Some releases
+                                    | Error _ -> None)
+                                |> List.collect id
 
-                    let outcome = if reconcileResult.HadPlaylistFailures then PartialFailure else Success
+                            let today = resilientRuntime.UtcNow() |> fun now -> DateOnly.FromDateTime(now.UtcDateTime)
+                            let lookbackDays = config.LookbackDays |> Config.PositiveInt.value
 
-                    appendLog
-                        AC.Info
-                        "SyncCompleted"
-                        "Sync completed."
-                        (Map
-                            [ "tracks_added", string reconcileResult.AddedCount
-                              "tracks_removed", string reconcileResult.RemovedCount ])
+                            let candidateReleases =
+                                labelReleases @ artistReleases
+                                |> filterByLookback today lookbackDays
+                                |> dedupReleases
 
-                    snapshot outcome
+                            let classifiedReleases, classifyLogs = classifyByGenres config resilientRuntime candidateReleases
+                            appendLogs classifyLogs
 
-        with
-        | ResilientPipeline.SyncAbortedException(reason, logEntry) ->
-            recordedLogs.Add logEntry
-            abort reason
+                            // -- Artist dislike filtering (Phase 2) --
+                            // Fetch song and album ratings concurrently since they are independent.
+                            let! songAndAlbumResults =
+                                Async.Parallel
+                                    [| async { return fetchSongRatings config resilientRuntime }
+                                       async { return fetchAlbumRatings config resilientRuntime } |]
+
+                            let excludedArtists =
+                                match songAndAlbumResults.[0], songAndAlbumResults.[1] with
+                                | Ok songBody, Ok albumBody ->
+                                    let excluded = collectExcludedArtists songBody albumBody
+                                    excluded |> Set.iter (fun artist ->
+                                        appendLog
+                                            AC.Info
+                                            "ExcludedDislikedArtist"
+                                            $"Excluded disliked artist from playlist population."
+                                            (Map [ "artist", artist ]))
+                                    excluded
+                                | Error _, _
+                                | _, Error _ ->
+                                    // Non-fatal: if ratings retrieval fails, skip filtering.
+                                    Set.empty
+
+                            let filteredReleases = filterByExcludedArtists excludedArtists classifiedReleases
+
+                            let discovery: AC.DiscoveryResult =
+                                { SeedArtists = seedArtists
+                                  SimilarArtists = similarArtists
+                                  LabelArtists = labelArtists
+                                  Releases = filteredReleases }
+
+                            let! reconcileResult, reconcileLogs =
+                                PlaylistReconcile.reconcilePlaylists config discovery resilientRuntime knownPlaylistIds
+
+                            appendLogs reconcileLogs
+                            resolvedPlaylistIds <- reconcileResult.ResolvedPlaylistIds
+
+                            let outcome = if reconcileResult.HadPlaylistFailures then PartialFailure else Success
+
+                            appendLog
+                                AC.Info
+                                "SyncCompleted"
+                                "Sync completed."
+                                (Map
+                                    [ "tracks_added", string reconcileResult.AddedCount
+                                      "tracks_removed", string reconcileResult.RemovedCount ])
+
+                            return snapshot outcome
+
+            with
+            | ResilientPipeline.SyncAbortedException(reason, logEntry) ->
+                recordedLogs.Add logEntry
+                return abort reason
+        }
 
     let runSyncWithProvider (provider: AC.SimilarArtistProvider) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
         runSyncInternal (Some provider) Async.Sleep config runtime knownPlaylistIds
