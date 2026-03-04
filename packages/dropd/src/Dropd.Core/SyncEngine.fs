@@ -631,8 +631,24 @@ module SyncEngine =
         let recordedRequests = ResizeArray<AC.ApiRequest>()
         let recordedLogs = ResizeArray<AC.LogEntry>()
 
+        // Pipeline setup: wrap the original runtime with resilience behaviour
+        // (retry, rate-limit, execution guards). The resilient runtime sits
+        // between the recording wrapper and the original runtime so retries
+        // are captured in the observable log.
+        let pipelineConfig = ResilientPipeline.configFrom config
+        let pipelineStats = ResilientPipeline.createStats ()
+
+        let resilientRuntime =
+            ResilientPipeline.wrap
+                pipelineConfig
+                pipelineStats
+                Async.Sleep
+                recordedLogs.Add
+                None
+                runtime
+
         let runtimeWithRecording: AC.ApiRuntime =
-            { runtime with
+            { resilientRuntime with
                 Execute =
                     (fun request ->
                         async {
@@ -644,7 +660,7 @@ module SyncEngine =
                                     Headers = redactHeaders request.Headers
                                     Query = redactQueryParams request.Query }
                             recordedRequests.Add safeRequest
-                            return! runtime.Execute request
+                            return! resilientRuntime.Execute request
                         }) }
 
         // Create the provider using the recording runtime so Last.fm requests are captured.
