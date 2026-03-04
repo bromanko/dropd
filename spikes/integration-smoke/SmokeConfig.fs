@@ -23,12 +23,12 @@ type JsonConfig =
 let load () : Result<Config.SyncConfig, string> =
     let developerToken = Environment.GetEnvironmentVariable("DROPD_APPLE_MUSIC_TOKEN") |> Option.ofObj |> Option.defaultValue ""
     let userToken      = Environment.GetEnvironmentVariable("DROPD_APPLE_USER_TOKEN")  |> Option.ofObj |> Option.defaultValue ""
-    // Phase 1 never calls Last.fm, but Config.validate requires a non-empty value.
-    let lastFmKey      = Environment.GetEnvironmentVariable("DROPD_LASTFM_API_KEY")    |> Option.ofObj |> Option.defaultValue "phase1-unused"
+    let lastFmKey      = Environment.GetEnvironmentVariable("DROPD_LASTFM_API_KEY")    |> Option.ofObj |> Option.defaultValue ""
 
     let missing =
         [ if String.IsNullOrWhiteSpace developerToken then "DROPD_APPLE_MUSIC_TOKEN"
-          if String.IsNullOrWhiteSpace userToken      then "DROPD_APPLE_USER_TOKEN" ]
+          if String.IsNullOrWhiteSpace userToken      then "DROPD_APPLE_USER_TOKEN"
+          if String.IsNullOrWhiteSpace lastFmKey      then "DROPD_LASTFM_API_KEY" ]
 
     if not (List.isEmpty missing) then
         let missingStr = String.concat ", " missing

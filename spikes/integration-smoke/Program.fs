@@ -102,10 +102,13 @@ let main _argv =
         if List.isEmpty config.LabelNames then "(none)"
         else String.concat ", " config.LabelNames
     printfn "  Labels      : %s" labelStr
+    printfn "  Storefront  : %s" config.Storefront
     printfn "  Lookback    : %d days" (Config.PositiveInt.value config.LookbackDays)
     printfn "  Rolling win : %d days" (Config.PositiveInt.value config.RollingWindowDays)
+    printfn "  Similar cap : %d%%" (Config.Percent.value config.SimilarArtistMaxPercent)
     printfn "  Dev token   : [redacted]"
     printfn "  User token  : [redacted]"
+    printfn "  Last.fm key : [redacted]"
     printfn ""
     printfn "Running sync…"
 
