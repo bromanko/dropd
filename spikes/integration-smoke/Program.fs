@@ -112,9 +112,24 @@ let main _argv =
     printfn ""
     printfn "Running sync…"
 
-    let runtime = HttpRuntime.create ()
+    let baseRuntime = HttpRuntime.create ()
+    let mutable requestCount = 0
+
+    let runtime : ApiContracts.ApiRuntime =
+        { baseRuntime with
+            Execute =
+                fun request ->
+                    async {
+                        requestCount <- requestCount + 1
+                        let svc = serviceLabel request.Service
+                        eprintf "  [%d] %s %s %s\r" requestCount svc request.Method request.Path
+                        let! response = baseRuntime.Execute request
+                        return response
+                    } }
+
     let cachedIds = loadPlaylistCache ()
     let outcome, observed = SyncEngine.runSync config runtime cachedIds
+    eprintfn "  %d requests completed.                                          " requestCount
 
     // Merge cached IDs with newly resolved ones and persist.
     let mergedIds =
