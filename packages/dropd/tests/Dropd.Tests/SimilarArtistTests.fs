@@ -194,11 +194,47 @@ let tests =
               Expect.isNonEmpty burialAlbumRequests "Burial should still be resolved and queried despite NoMatch failing"
 
           // DD-016: If the similar-artist data source is unavailable, log an error.
-          ptestCase "DD-016 logs error when similar-artist source unavailable" <| fun _ -> ()
+          testCase "DD-016 logs error when similar-artist source unavailable" <| fun _ ->
+              let lastFm503Route =
+                  route "lastfm" "GET" "/2.0" [] (Always(withStatus 503 "Service Unavailable"))
+
+              let setup =
+                  setupWith (baseSeedRoutes @ [ lastFm503Route ] @ similarArtistAlbumRoutes)
+
+              let output = runSync similarConfig setup
+
+              Expect.isTrue
+                  (output.Logs |> List.exists (fun log -> log.Code = SimilarArtistServiceUnavailable))
+                  "should log SimilarArtistServiceUnavailable when Last.fm returns 503"
 
           // DD-017: If the similar-artist data source is unavailable, continue sync.
-          ptestCase "DD-017 continues sync without similar artists when source unavailable"
-          <| fun _ -> ()
+          testCase "DD-017 continues sync without similar artists when source unavailable"
+          <| fun _ ->
+              let lastFm503Route =
+                  route "lastfm" "GET" "/2.0" [] (Always(withStatus 503 "Service Unavailable"))
+
+              let cfg =
+                  { similarConfig with
+                      LabelNames = []
+                      Playlists =
+                          [ { Name = "Electronic Drops"
+                              GenreCriteria = [ "electronic" ] } ] }
+
+              let setup =
+                  setupWith
+                      (baseSeedRoutes
+                       @ [ lastFm503Route ]
+                       @ [ route "apple" "GET" "/v1/me/library/playlists" [] (Always(withStatus 200 """{"data":[]}"""))
+                           route "apple" "POST" "/v1/me/library/playlists" [] (Always(withStatus 201 """{"data":[{"id":"p.new","type":"library-playlists","attributes":{"name":"Electronic Drops"}}]}"""))
+                           route "apple" "POST" "/v1/me/library/playlists/p.new/tracks" [] (Always(withStatus 200 "{}")) ])
+
+              let output = runSync cfg setup
+
+              // Sync should not abort — it should continue with seed/label data only.
+              match output.Outcome with
+              | Some (Dropd.Core.Types.Success) -> ()
+              | Some (Dropd.Core.Types.PartialFailure) -> ()
+              | other -> failwithf "expected Success or PartialFailure, got %A" other
 
           // DD-018: Similar-artist access is provider-independent.
           testCase "DD-018 similar-artist access is provider-independent" <| fun _ ->
