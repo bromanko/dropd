@@ -281,7 +281,7 @@ module SyncEngine =
             config
             runtime
             "GET"
-            "/v1/catalog/us/search"
+            $"/v1/catalog/{config.Storefront}/search"
             [ "term", labelName; "types", "record-labels"; "limit", "1" ]
             None
         |> toResult parseSearchLabelId
@@ -301,7 +301,7 @@ module SyncEngine =
         |> Option.defaultValue []
 
     let private fetchLabelReleases (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (labelId: string) =
-        let path = $"/v1/catalog/us/record-labels/{labelId}"
+        let path = $"/v1/catalog/{config.Storefront}/record-labels/{labelId}"
         executeApple config runtime "GET" path [ "views", "latest-releases" ] None
         |> toResult parseLabelViewReleases
 
@@ -320,7 +320,7 @@ module SyncEngine =
                         "ApiFailure"
                         "Failed to resolve label ID."
                         (Map
-                            [ "endpoint", "/v1/catalog/us/search"
+                            [ "endpoint", $"/v1/catalog/{config.Storefront}/search"
                               "status", string response.StatusCode
                               // Finding 15: truncate response body before logging.
                               "message", truncateBody response.Body ])
@@ -346,7 +346,7 @@ module SyncEngine =
                             "ApiFailure"
                             "Failed to fetch latest releases for label."
                             (Map
-                                [ "endpoint", $"/v1/catalog/us/record-labels/{labelId}?views=latest-releases"
+                                [ "endpoint", $"/v1/catalog/{config.Storefront}/record-labels/{labelId}?views=latest-releases"
                                   "status", string response.StatusCode
                                   // Finding 15: truncate response body before logging.
                                   "message", truncateBody response.Body ])
@@ -366,7 +366,7 @@ module SyncEngine =
         artists |> List.distinctBy (fun artist -> artist.Id), releases, logs
 
     let fetchArtistReleases (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (artistId: CatalogArtistId) =
-        let path = $"/v1/catalog/us/artists/{artistIdValue artistId}/albums"
+        let path = $"/v1/catalog/{config.Storefront}/artists/{artistIdValue artistId}/albums"
         executeApple config runtime "GET" path [ "sort", "-releaseDate"; "limit", "25" ] None
         |> toResult parseReleaseList
 
@@ -376,7 +376,7 @@ module SyncEngine =
     let dedupReleases (releases: AC.DiscoveredRelease list) = releases |> List.distinctBy (fun release -> release.Id)
 
     let private fetchAlbumDetails (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (albumId: CatalogAlbumId) =
-        let path = $"/v1/catalog/us/albums/{albumIdValue albumId}"
+        let path = $"/v1/catalog/{config.Storefront}/albums/{albumIdValue albumId}"
         executeApple config runtime "GET" path [] None
         |> toResult (parseReleaseList >> List.tryHead)
 
@@ -399,7 +399,7 @@ module SyncEngine =
                                 "ApiFailure"
                                 "Failed to fetch album details."
                                 (Map
-                                    [ "endpoint", $"/v1/catalog/us/albums/{albumIdValue release.Id}"
+                                    [ "endpoint", $"/v1/catalog/{config.Storefront}/albums/{albumIdValue release.Id}"
                                       "status", string response.StatusCode
                                       // Finding 15: truncate response body before logging.
                                       "message", truncateBody response.Body ])
@@ -601,8 +601,12 @@ module SyncEngine =
                     (fun request ->
                         async {
                             // Finding 16: store a copy with redacted auth header values
-                            // so tokens are not retained in the observable log.
-                            let safeRequest = { request with Headers = redactHeaders request.Headers }
+                            // and sensitive query parameters (e.g. api_key) so tokens
+                            // are not retained in the observable log.
+                            let safeRequest =
+                                { request with
+                                    Headers = redactHeaders request.Headers
+                                    Query = redactQueryParams request.Query }
                             recordedRequests.Add safeRequest
                             return! runtime.Execute request
                         }) }
@@ -725,7 +729,7 @@ module SyncEngine =
                                 "Failed to query Apple Music catalog releases."
                                 (Map
                                     [ "artist", artist.Name
-                                      "endpoint", $"/v1/catalog/us/artists/{artistIdValue artist.Id}/albums"
+                                      "endpoint", $"/v1/catalog/{config.Storefront}/artists/{artistIdValue artist.Id}/albums"
                                       "status", string response.StatusCode
                                       "message", truncateBody response.Body ])
 

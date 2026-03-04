@@ -55,7 +55,10 @@ module Config =
           AppleMusicUserToken: AppleMusicUserToken
 
           /// Last.fm API key.
-          LastFmApiKey: LastFmApiKey }
+          LastFmApiKey: LastFmApiKey
+
+          /// Apple Music storefront identifier (ISO 3166-1 alpha-2 code, e.g. "us").
+          Storefront: string }
 
     /// Percentage value constrained to the inclusive range 0..100.
     type Percent = private Percent of int
@@ -90,7 +93,8 @@ module Config =
           SyncTimeUtc: TimeOnly
           AppleMusicDeveloperToken: AppleMusicDeveloperToken
           AppleMusicUserToken: AppleMusicUserToken
-          LastFmApiKey: LastFmApiKey }
+          LastFmApiKey: LastFmApiKey
+          Storefront: string }
 
     type ConfigError =
         | MissingCredential of fieldName: string
@@ -117,7 +121,8 @@ module Config =
           SyncTimeUtc = TimeOnly(4, 0)
           AppleMusicDeveloperToken = AppleMusicDeveloperToken ""
           AppleMusicUserToken = AppleMusicUserToken ""
-          LastFmApiKey = LastFmApiKey "" }
+          LastFmApiKey = LastFmApiKey ""
+          Storefront = "us" }
 
     let private nonPositive fieldName value =
         if value > 0 then
@@ -191,7 +196,8 @@ module Config =
               percent "ErrorRateAbortPercent" config.ErrorRateAbortPercent
               requiredCredential "AppleMusicDeveloperToken" developerToken
               requiredCredential "AppleMusicUserToken" userToken
-              requiredCredential "LastFmApiKey" lastFmApiKey ]
+              requiredCredential "LastFmApiKey" lastFmApiKey
+              requiredCredential "Storefront" config.Storefront ]
             |> List.choose id
 
         let errors =
@@ -213,6 +219,7 @@ module Config =
                   SyncTimeUtc = config.SyncTimeUtc
                   AppleMusicDeveloperToken = config.AppleMusicDeveloperToken
                   AppleMusicUserToken = config.AppleMusicUserToken
-                  LastFmApiKey = config.LastFmApiKey }
+                  LastFmApiKey = config.LastFmApiKey
+                  Storefront = config.Storefront }
         else
             Error errors
