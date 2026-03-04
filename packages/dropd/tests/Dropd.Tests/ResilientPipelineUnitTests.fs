@@ -4,6 +4,7 @@ open System
 open Expecto
 open Dropd.Core
 open Dropd.Core.ResilientPipeline
+open Dropd.Core
 
 module AC = ApiContracts
 
@@ -334,4 +335,74 @@ let guardTests =
                 ()
 
             Expect.equal stats.TotalRequests 5 "should complete all 5 requests"
+    ]
+
+[<Tests>]
+let logRetentionTests =
+    testList "Unit.LogRetention" [
+        testCase "deletes files older than retention window" <| fun _ ->
+            let tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"dropd-test-{Guid.NewGuid()}")
+            System.IO.Directory.CreateDirectory(tempDir) |> ignore
+            try
+                let now = DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero)
+                let oldFile = System.IO.Path.Combine(tempDir, "old.log")
+                let newFile = System.IO.Path.Combine(tempDir, "new.log")
+                System.IO.File.WriteAllText(oldFile, "old")
+                System.IO.File.WriteAllText(newFile, "new")
+                System.IO.File.SetLastWriteTimeUtc(oldFile, now.AddDays(-10.0).UtcDateTime)
+                System.IO.File.SetLastWriteTimeUtc(newFile, now.AddDays(-3.0).UtcDateTime)
+
+                let deleted = LogRetention.prune tempDir 7 now
+
+                Expect.equal deleted 1 "should delete 1 file"
+                Expect.isFalse (System.IO.File.Exists oldFile) "old file should be deleted"
+                Expect.isTrue (System.IO.File.Exists newFile) "new file should remain"
+            finally
+                if System.IO.Directory.Exists tempDir then
+                    System.IO.Directory.Delete(tempDir, true)
+
+        testCase "does nothing when directory does not exist" <| fun _ ->
+            let now = DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero)
+            let deleted = LogRetention.prune "/nonexistent/path/dropd-test-missing" 7 now
+            Expect.equal deleted 0 "should return 0"
+
+        testCase "ignores non-log files" <| fun _ ->
+            let tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"dropd-test-{Guid.NewGuid()}")
+            System.IO.Directory.CreateDirectory(tempDir) |> ignore
+            try
+                let now = DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero)
+                let txtFile = System.IO.Path.Combine(tempDir, "old.txt")
+                System.IO.File.WriteAllText(txtFile, "text")
+                System.IO.File.SetLastWriteTimeUtc(txtFile, now.AddDays(-10.0).UtcDateTime)
+
+                let deleted = LogRetention.prune tempDir 7 now
+
+                Expect.equal deleted 0 "should return 0"
+                Expect.isTrue (System.IO.File.Exists txtFile) "txt file should remain"
+            finally
+                if System.IO.Directory.Exists tempDir then
+                    System.IO.Directory.Delete(tempDir, true)
+    ]
+
+[<Tests>]
+let schedulingLogDecisionTests =
+    testList "Unit.Scheduling.LogDecision" [
+        testCase "SkipSync AlreadyRunning produces SyncSkippedOverlap log" <| fun _ ->
+            let result = Scheduling.logDecision (Scheduling.SkipSync Types.AlreadyRunning)
+            Expect.isSome result "should produce a log entry"
+            Expect.equal result.Value.Code "SyncSkippedOverlap" "code should be SyncSkippedOverlap"
+
+        testCase "decideOnStartup returns MissedWhileUnavailable when service starts after window" <| fun _ ->
+            let nowUtc = DateTimeOffset(2026, 3, 1, 10, 0, 0, TimeSpan.Zero) // 10:00 UTC
+            let syncTimeUtc = TimeOnly(4, 0) // 04:00 UTC
+            let decision = Scheduling.decideOnStartup nowUtc syncTimeUtc None
+            Expect.equal decision (Scheduling.SkipSync Types.MissedWhileUnavailable) "should be SkipSync MissedWhileUnavailable"
+
+            let log = Scheduling.logDecision decision
+            Expect.isSome log "should produce a log entry"
+            Expect.equal log.Value.Code "SyncSkippedMissed" "code should be SyncSkippedMissed"
+
+        testCase "StartSync produces no log" <| fun _ ->
+            let result = Scheduling.logDecision Scheduling.StartSync
+            Expect.isNone result "should produce no log entry"
     ]

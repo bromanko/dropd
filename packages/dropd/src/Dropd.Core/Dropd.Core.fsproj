@@ -15,6 +15,7 @@
     <Compile Include="SimilarArtists.fs" />
     <Compile Include="SyncEngine.fs" />
     <Compile Include="Scheduling.fs" />
+    <Compile Include="LogRetention.fs" />
   </ItemGroup>
 
 </Project>
