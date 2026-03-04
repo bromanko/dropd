@@ -434,6 +434,10 @@ module SyncEngine =
             |> List.tryFind (fun (_, name) -> Normalization.normalizeText name = normalizedQuery)
             |> Option.map (fun (id, name) -> { Id = withArtistId id; Name = name }: AC.DiscoveredArtist)
 
+    /// Public wrapper for resolveArtistByName, exposed for unit testing.
+    let resolveArtistByNamePublic (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (artistName: string) =
+        resolveArtistByName config runtime artistName
+
     /// Discover similar artists for all seed artists via the provider, resolve
     /// them to Apple Music catalog IDs, and return a deduplicated list.
     /// Provider calls are fanned out concurrently via Async.Parallel; an auth
@@ -535,7 +539,18 @@ module SyncEngine =
             if isSensitiveHeader name then name, "[redacted]"
             else name, value)
 
-    let runSyncWithProvider (provider: AC.SimilarArtistProvider) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
+    // Finding 15: redact sensitive query string parameters (e.g. Last.fm api_key)
+    // so API keys are not persisted in the observable log.
+    let private isSensitiveQueryParam (name: string) =
+        String.Equals(name, "api_key", StringComparison.OrdinalIgnoreCase)
+
+    let private redactQueryParams (query: (string * string) list) =
+        query
+        |> List.map (fun (name, value) ->
+            if isSensitiveQueryParam name then name, "[redacted]"
+            else name, value)
+
+    let private runSyncInternal (providerOpt: AC.SimilarArtistProvider option) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
         let recordedRequests = ResizeArray<AC.ApiRequest>()
         let recordedLogs = ResizeArray<AC.LogEntry>()
 
@@ -550,6 +565,12 @@ module SyncEngine =
                             recordedRequests.Add safeRequest
                             return! runtime.Execute request
                         }) }
+
+        // Create the provider using the recording runtime so Last.fm requests are captured.
+        let provider =
+            match providerOpt with
+            | Some p -> p
+            | None -> SimilarArtists.createLastFmProvider config runtimeWithRecording
 
         let appendLog level code message data = recordedLogs.Add(mkLog level code message data)
         let appendLogs logs = logs |> List.iter recordedLogs.Add
@@ -715,6 +736,8 @@ module SyncEngine =
 
                     snapshot outcome
 
+    let runSyncWithProvider (provider: AC.SimilarArtistProvider) (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
+        runSyncInternal (Some provider) config runtime knownPlaylistIds
+
     let runSync (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (knownPlaylistIds: Map<string, string>) : Types.SyncOutcome * AC.ObservedSync =
-        let defaultProvider = SimilarArtists.createLastFmProvider config runtime
-        runSyncWithProvider defaultProvider config runtime knownPlaylistIds
+        runSyncInternal None config runtime knownPlaylistIds

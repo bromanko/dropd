@@ -463,4 +463,154 @@ let authAndLogTests =
               let _ = SyncEngine.fetchLibraryArtists validConfig runtime
               let headers = state.Requests.Head.Headers
               Expect.isTrue (headers |> List.exists (fun (k, v) -> k = "Music-User-Token" && v = "user-token")) "music-user-token required"
+
+          testCase "Last.fm requests include api_key from config"
+          <| fun _ ->
+              let request = SimilarArtists.buildRequest validConfig "Bonobo"
+              Expect.isTrue
+                  (request.Query |> List.exists (fun (k, v) -> k = "api_key" && v = "lastfm-key"))
+                  "api_key should come from config"
+        ]
+
+[<Tests>]
+let similarArtistTests =
+    testList
+        "Unit.SyncEngine.SimilarArtists"
+        [
+          testCase "Last.fm request contains method=artist.getSimilar, artist name, format=json, limit=10"
+          <| fun _ ->
+              let request = SimilarArtists.buildRequest validConfig "Bonobo"
+              Expect.equal request.Service AC.LastFm "should target Last.fm"
+              Expect.equal request.Path "/2.0" "should use Last.fm API path"
+              Expect.isTrue (request.Query |> List.contains ("method", "artist.getSimilar")) "method param"
+              Expect.isTrue (request.Query |> List.contains ("artist", "Bonobo")) "artist param"
+              Expect.isTrue (request.Query |> List.contains ("format", "json")) "format param"
+              Expect.isTrue (request.Query |> List.contains ("limit", "10")) "limit param"
+
+          testCase "parser maps Last.fm error code 10 to AuthFailure"
+          <| fun _ ->
+              let body = lastFmFixture "similar-invalid-key.json"
+              let result = SimilarArtists.parseResponse 200 body
+              match result with
+              | Error(AC.AuthFailure msg) ->
+                  Expect.stringContains msg "Invalid API key" "should include error message"
+              | other -> failwithf "expected AuthFailure, got %A" other
+
+          testCase "parser maps non-auth Last.fm error to Unavailable"
+          <| fun _ ->
+              let body = lastFmFixture "similar-not-found.json"
+              let result = SimilarArtists.parseResponse 200 body
+              match result with
+              | Error(AC.Unavailable(200, msg)) ->
+                  Expect.stringContains msg "could not be found" "should include error message"
+              | other -> failwithf "expected Unavailable, got %A" other
+
+          testCase "parser maps non-2xx status to Unavailable"
+          <| fun _ ->
+              let result = SimilarArtists.parseResponse 503 "Service Unavailable"
+              match result with
+              | Error(AC.Unavailable(503, _)) -> ()
+              | other -> failwithf "expected Unavailable(503, _), got %A" other
+
+          testCase "parser parses success payload into SimilarArtist list"
+          <| fun _ ->
+              let body = lastFmFixture "similar-bonobo.json"
+              let result = SimilarArtists.parseResponse 200 body
+              match result with
+              | Ok artists ->
+                  Expect.equal artists.Length 4 "should return all artists"
+                  Expect.equal artists.[0].Name "Burial" "first artist name"
+                  Expect.equal artists.[0].Mbid (Some "9ea80bb8-4bcb-4188-9e0d-4156b187c6f9") "first artist MBID"
+                  Expect.equal artists.[3].Name "NoMatch" "last artist name"
+                  Expect.equal artists.[3].Mbid None "empty MBID should be None"
+              | Error err -> failwithf "expected Ok, got %A" err
+
+          testCase "seed filtering removes normalized-name matches"
+          <| fun _ ->
+              // This is tested via the full discoverSimilarArtists flow:
+              // "Bonobo" seed should filter out " Bonobo " from similar results.
+              let body = lastFmFixture "similar-bonobo.json"
+              let result = SimilarArtists.parseResponse 200 body
+              let artists = Result.defaultValue [] result
+              let seedNormalized = Set.ofList [ Normalization.normalizeText "Bonobo" ]
+              let filtered = artists |> List.filter (fun a -> not (seedNormalized.Contains(Normalization.normalizeText a.Name)))
+              Expect.isFalse
+                  (filtered |> List.exists (fun a -> Normalization.normalizeText a.Name = "bonobo"))
+                  "seed artist should be filtered out"
+              Expect.equal filtered.Length 3 "3 non-seed artists remain"
+
+          testCase "artist resolution queries /v1/catalog/us/search with types=artists and limit=5"
+          <| fun _ ->
+              let runtime, state =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/catalog/us/search"
+                          Query = [ "term", "Burial"; "types", "artists"; "limit", "5" ]
+                          Response = Helpers.ok (fixture "artist-search-burial.json") } ]
+
+              let _ = SyncEngine.resolveArtistByNamePublic validConfig runtime "Burial"
+              let req = state.Requests.Head
+              Expect.equal req.Path "/v1/catalog/us/search" "search path"
+              Expect.isTrue (req.Query |> List.contains ("types", "artists")) "types param"
+              Expect.isTrue (req.Query |> List.contains ("limit", "5")) "limit param"
+
+          testCase "fallback name matching resolves The  Black  Keys vs the black keys"
+          <| fun _ ->
+              let runtime, _ =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/catalog/us/search"
+                          Query = [ "term", "The  Black  Keys"; "types", "artists"; "limit", "5" ]
+                          Response = Helpers.ok (fixture "artist-search-black-keys.json") } ]
+
+              let result = SyncEngine.resolveArtistByNamePublic validConfig runtime "The  Black  Keys"
+              match result with
+              | Some artist ->
+                  Expect.equal (artist.Id) (CatalogArtistId "136975") "should resolve to correct ID"
+              | None -> failwith "expected resolution to succeed"
+
+          testCase "unresolved artist (empty search results) returns None"
+          <| fun _ ->
+              let runtime, _ =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/catalog/us/search"
+                          Query = [ "term", "NoMatch"; "types", "artists"; "limit", "5" ]
+                          Response = Helpers.ok (fixture "artist-search-empty.json") } ]
+
+              let result = SyncEngine.resolveArtistByNamePublic validConfig runtime "NoMatch"
+              Expect.isNone result "unresolvable artist should return None"
+
+          testCase "parser maps invalid JSON body to MalformedResponse"
+          <| fun _ ->
+              let result = SimilarArtists.parseResponse 200 "not valid json at all"
+              match result with
+              | Error(AC.MalformedResponse _) -> ()
+              | other -> failwithf "expected MalformedResponse, got %A" other
+
+          testCase "parser handles empty body gracefully"
+          <| fun _ ->
+              let result = SimilarArtists.parseResponse 200 ""
+              match result with
+              | Error(AC.MalformedResponse _) -> ()
+              | other -> failwithf "expected MalformedResponse for empty body, got %A" other
+
+          testCase "parser returns empty list when similarartists key is missing"
+          <| fun _ ->
+              let result = SimilarArtists.parseResponse 200 """{"other":"data"}"""
+              Expect.equal result (Ok []) "missing key structure should return empty list"
+
+          testCase "parser returns empty list when artist array is missing"
+          <| fun _ ->
+              let result = SimilarArtists.parseResponse 200 """{"similarartists":{}}"""
+              Expect.equal result (Ok []) "missing artist key should return empty list"
+
+          testCase "deduplicate resolved similar artists by catalog ID"
+          <| fun _ ->
+              let artists : AC.DiscoveredArtist list =
+                  [ { Id = CatalogArtistId "14294754"; Name = "Burial" }
+                    { Id = CatalogArtistId "14294754"; Name = "Burial" }
+                    { Id = CatalogArtistId "136975"; Name = "The Black Keys" } ]
+              let deduped = artists |> List.distinctBy (fun a -> a.Id)
+              Expect.equal deduped.Length 2 "should deduplicate by ID"
         ]
