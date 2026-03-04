@@ -38,18 +38,31 @@ explicitly deferred).
 ## Progress
 
 - [x] (2026-03-04 23:05Z) Revised this ExecPlan after review: removed ambiguous steps, made pagination scope explicit, and added concrete timeout implementation/testing guidance.
-- [ ] (pending) Milestone 1: resilient request pipeline foundations.
-- [ ] (pending) Milestone 2: retry with backoff for transient failures, including request timeouts (DD-082).
-- [ ] (pending) Milestone 3: rate-limit handling (DD-080, DD-081).
-- [ ] (pending) Milestone 4: generic pagination for top-level `next` endpoints (DD-083, DD-084, DD-085).
-- [ ] (pending) Milestone 5: execution guards — runtime limit and error-rate abort (DD-086..DD-089).
-- [ ] (pending) Milestone 6: operational observability — log retention and skip logging (DD-076, DD-077, DD-078).
-- [ ] (pending) Milestone 7: final gate.
+- [x] (2026-03-04 23:22Z) Milestone 1: resilient request pipeline foundations.
+- [x] (2026-03-04 23:29Z) Milestone 2: retry with backoff for transient failures, including request timeouts (DD-082).
+- [x] (2026-03-04 23:31Z) Milestone 3: rate-limit handling (DD-080, DD-081).
+- [x] (2026-03-04 23:35Z) Milestone 4: generic pagination for top-level `next` endpoints (DD-083, DD-084, DD-085).
+- [x] (2026-03-04 23:43Z) Milestone 5: execution guards — runtime limit and error-rate abort (DD-086..DD-089).
+- [x] (2026-03-04 23:44Z) Milestone 6: operational observability — log retention and skip logging (DD-076, DD-077, DD-078).
+- [x] (2026-03-04 23:45Z) Milestone 7: final gate.
 
 
 ## Surprises & Discoveries
 
-(None yet — to be filled during implementation.)
+- Observation: The test harness originally used `Async.Sleep` for the pipeline delay, making tests with 5xx responses take ~20 seconds. Adding a no-op delay injection via `runSyncWithDelay` reduced test suite time from 51s to 8s.
+  Evidence: Full suite run time dropped from 00:00:51 to 00:00:08 after switching to no-op delay in tests.
+
+- Observation: The recording wrapper needed to be innermost (wrapping the original runtime), not outermost, so that retries are captured in the observable log. The plan's stated flow was incorrect; the correct flow is: caller → resilientRuntime → runtimeWithRecording → original runtime.
+  Evidence: DD-082 test failed with 1 recorded request instead of 3 until the wrapping order was reversed.
+
+- Observation: DD-052 (continues after playlist creation failure) needed updating because the pipeline retries the 500 response. A `Sequence [500; 200]` was consumed by retry, leaving no response for the second playlist creation. Fixed by providing 4×500 responses to exhaust retries before the success response.
+  Evidence: DD-052 expected 2 create requests but saw 3; fixed by providing 5 responses (4 failures + 1 success) and asserting 5 requests.
+
+- Observation: Error rate guards initially counted all 4xx+ responses, including Last.fm 404s (unmatched routes). This caused ErrorRate aborts in many existing tests. Fixed by: (1) only counting 5xx as failures for the error rate, and (2) skipping retry/guard logic entirely for non-Apple-Music requests.
+  Evidence: Full suite went from 17 failures to 0 after these changes.
+
+- Observation: Guard checks needed to happen after the retry loop completes (counting only final outcomes), not during individual retry attempts. Otherwise, 4 retry attempts for a single 503 endpoint inflated the error count and triggered ErrorRate abort prematurely.
+  Evidence: DD-030 expected `Aborted "CatalogUnavailable"` but got `Aborted "ErrorRate"` until stats tracking was moved to post-retry.
 
 
 ## Decision Log
@@ -89,7 +102,23 @@ explicitly deferred).
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and at completion.)
+Phase 3 is complete. All acceptance criteria are met:
+
+1. `ResilientPipeline.wrap` retries transient failures (HTTP 5xx and request timeouts) with exponential backoff up to `MaxRetries`, recording computed delays in `PipelineStats.ComputedDelays` and emitting `TransientRetryScheduled` logs. ✓
+2. HTTP 429 responses are handled with `Retry-After` parsing (default 2s). `RetryAfterWait` log entries are emitted. ✓
+3. Paginated top-level-`next` endpoints (library artists, artist albums, playlist tracks) are followed up to `MaxPages` with `PageLimitReached` warnings. ✓
+4. Runtime limit guard aborts with `RuntimeExceeded` and `SyncAbortedRuntimeExceeded`. ✓
+5. Error rate guard aborts with `ErrorRate` and `SyncAbortedErrorRate` (with rate details). ✓
+6. `LogRetention.prune` deletes `.log` files older than the configured retention window. ✓
+7. `Scheduling.logDecision` and `decideOnStartup` produce reason-coded log entries for skipped syncs. ✓
+8. Active DD tests include DD-076..DD-078 and DD-080..DD-089 (13 tests activated). ✓
+9. Full suite: 188 passed, 5 ignored, 0 failed, 0 errored. ✓
+10. Remaining 5 ignored tests are DD-063, DD-070..DD-073 (Apple Token Lifecycle). ✓
+
+Key design decisions during implementation:
+- Non-Apple-Music requests bypass retry/guard logic entirely, keeping Last.fm error handling unchanged.
+- Stats count only final outcomes (post-retry), not individual retry attempts.
+- Tests use a no-op delay function for performance; production uses `Async.Sleep`.
 
 
 ## Context and Orientation
