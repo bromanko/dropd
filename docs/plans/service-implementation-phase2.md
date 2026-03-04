@@ -22,11 +22,16 @@ The required acceptance coverage for this phase is:
 ## Progress
 
 - [x] (2026-03-03 18:31Z) Drafted initial Phase 2 scope and milestone sequence.
-- [ ] Milestone 1 complete: fixtures, contracts, and provider abstraction foundations.
-- [ ] Milestone 2 complete: similar-artist discovery core (DD-009..DD-015, DD-018).
-- [ ] Milestone 3 complete: similar-source resilience and Last.fm auth behavior (DD-016, DD-017, DD-061, DD-068, DD-069).
-- [ ] Milestone 4 complete: similar-track percentage cap and activation (DD-019).
-- [ ] Milestone 5 complete: artist dislike filtering and activation (DD-020..DD-022).
+- [x] (2026-03-04 16:30Z) Amended plan to resolve review gaps: MBID behavior, fixture schemas, granular TDD steps, DD test bodies, and cap-tracking design.
+- [ ] Milestone 1.1 complete: Last.fm + Apple Phase 2 fixtures added with deterministic payloads.
+- [ ] Milestone 1.2 complete: provider contracts, harness provider entrypoint, and compile-order changes build cleanly.
+- [ ] Milestone 1.3 complete: filter behavior clarified in plan (`--filter` works for active tests; `ptestCase` remains ignored).
+- [ ] Milestone 2.1 complete: provider parser/request unit tests written and passing.
+- [ ] Milestone 2.2 complete: orchestration/unit tests for similar retrieval, filtering, resolution, and dedup are passing.
+- [ ] Milestone 2.3 complete: DD-009..DD-015 and DD-018 activated with real assertions and passing.
+- [ ] Milestone 3 complete: DD-016, DD-017, DD-061, DD-068, DD-069 activated/passing.
+- [ ] Milestone 4 complete: deterministic similar-track cap implemented and DD-019 active/passing.
+- [ ] Milestone 5 complete: dislike artist filtering implemented and DD-020..DD-022 active/passing.
 - [ ] Milestone 6 complete: full-suite gate, plan retrospective, and final commit.
 
 ## Surprises & Discoveries
@@ -34,13 +39,13 @@ The required acceptance coverage for this phase is:
 - Observation: Last.fm API errors are encoded in JSON response bodies and can arrive with HTTP 200.
   Evidence: documented in `docs/research/lastfm-api.md`; existing harness test `Harness.Last.fm error scenarios use HTTP 200 with error payloads` is passing.
 
-- Observation: DD-name filtering with Expecto is unreliable in this repository configuration.
-  Evidence: from earlier Phase 1 runs, `--filter "DD-001"` selected zero tests while full test summary listed DD tests.
+- Observation: Expecto `--filter` matches active test names (`testCase`), but pending tests (`ptestCase`) remain ignored even when listed in summary output.
+  Evidence: `--filter "Unit.SyncEngine"` returns matching active tests; prior `--filter "DD-001"` behavior occurred when DD test was pending.
 
-  <!-- FEEDBACK: Can we figure out why this is? And fix it. -->
+- [CLARIFY] If future runs show zero selected tests for active DD names, capture exact command/output and create a small reproducer in `packages/dropd/tests/Dropd.Tests/HarnessTests.fs`.
 
 - Observation: Current baseline before Phase 2 work is green with substantial pending scope.
-  Evidence: `nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary` shows 101 passed, 35 ignored, 0 failed, 0 errored.
+  Evidence: `nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary` shows 109 passed, 35 ignored, 0 failed, 0 errored.
 
 ## Decision Log
 
@@ -60,26 +65,38 @@ The required acceptance coverage for this phase is:
   Rationale: those requirements are Apple token lifecycle concerns and are best grouped with API resilience/runtime limits in a later hardening phase.
   Date: 2026-03-03
 
+- Decision: MBID is used for Last.fm query reliability, but Apple Music artist resolution is performed by name search + normalized comparison.
+  Rationale: Apple Music catalog search in this repository does not expose MBID lookup fields; DD-011 is satisfied by preferring MBID in upstream similar-artist retrieval and then resolving to Apple IDs via deterministic normalized name matching.
+  Date: 2026-03-04
+
+- Decision: Similar-track cap logic will use an explicit `similarArtistIds: Set<CatalogArtistId>` input to planning, not inferred heuristics.
+  Rationale: `DiscoveredRelease` currently carries no source tag; explicit IDs are deterministic, testable, and avoid mutating release contracts.
+  Date: 2026-03-04
+
+- Decision: DD activation requires replacing `ptestCase` bodies with real assertions before switching to `testCase`.
+  Rationale: activating empty `fun _ -> ()` tests gives false confidence and does not verify DD behavior.
+  Date: 2026-03-04
+
 ## Outcomes & Retrospective
 
 (To be filled at major milestones and completion.)
 
 ## Context and Orientation
 
-The repository is already on a working Phase 1 baseline. The sync path is:
+The repository is already on a working Phase 1 baseline. The core sync path is:
 
-- `packages/dropd/tests/Dropd.Tests/TestHarness.fs` -> runtime adapter and fake routes.
+- `packages/dropd/tests/Dropd.Tests/TestHarness.fs` -> fake runtime and recorded requests.
 - `packages/dropd/src/Dropd.Core/SyncEngine.fs` -> orchestration and API calls.
-- `packages/dropd/src/Dropd.Core/PlaylistReconcile.fs` -> playlist plan/reconcile execution.
+- `packages/dropd/src/Dropd.Core/PlaylistReconcile.fs` -> playlist planning and apply.
 
 Requirement definitions live in `docs/ears/requirements.md`. Requirement tests live under
 `packages/dropd/tests/Dropd.Tests/`.
 
 Current pending requirement tests are concentrated in these files:
 
-- `SimilarArtistTests.fs` (DD-009..DD-019)
-- `ArtistFilteringTests.fs` (DD-020..DD-022)
-- `AuthenticationTests.fs` (DD-061, DD-068, DD-069; plus later-scope auth DDs)
+- `packages/dropd/tests/Dropd.Tests/SimilarArtistTests.fs` (DD-009..DD-019)
+- `packages/dropd/tests/Dropd.Tests/ArtistFilteringTests.fs` (DD-020..DD-022)
+- `packages/dropd/tests/Dropd.Tests/AuthenticationTests.fs` (DD-061, DD-068, DD-069; plus later auth DDs)
 
 Current fixture data is Apple-only under:
 
@@ -89,50 +106,78 @@ Phase 2 introduces deterministic Last.fm fixtures under:
 
 - `packages/dropd/tests/Dropd.Tests/Fixtures/lastfm/`
 
+Important response shapes used by this plan:
+
+- Last.fm success (`artist.getSimilar`, `format=json`):
+
+      {
+        "similarartists": {
+          "artist": [
+            { "name": "Burial", "mbid": "...", "match": "0.82" },
+            { "name": "Bonobo", "mbid": "...", "match": "0.67" }
+          ]
+        }
+      }
+
+- Last.fm auth error in HTTP 200 body:
+
+      { "error": 10, "message": "Invalid API key - You must be granted a valid key by last.fm" }
+
+- Last.fm artist-not-found in HTTP 200 body:
+
+      { "error": 6, "message": "The artist you supplied could not be found" }
+
+- Apple Music artist resolution endpoint used in this plan:
+
+      GET /v1/catalog/us/search?term=<artist-name>&types=artists&limit=5
+
+  Resolution strategy in this phase:
+  1. Similar artist retrieved from Last.fm includes `mbid` when available.
+  2. Apple catalog resolution still uses name search because MBID lookup is not available in this codebase.
+  3. Compare candidate names using `Normalization.normalizeText` for fallback matching.
+
+Current function signatures to preserve during refactor:
+
+- `SyncEngine.runSync : Config.ValidSyncConfig -> ApiContracts.ApiRuntime -> Map<string,string> -> Types.SyncOutcome * ApiContracts.ObservedSync`
+- `PlaylistReconcile.reconcilePlaylists : ... -> Async<ApiContracts.ReconcileResult * ApiContracts.LogEntry list>`
+
 ## Plan of Work
 
 The phase proceeds in six milestones.
 
-First, add deterministic Last.fm fixtures and explicit provider contracts so similar-artist
-behavior can be tested without network calls. This also establishes the abstraction required
-by DD-018.
+Milestone 1 (steps 1-16) establishes deterministic fixtures, provider contracts, and the extra harness entrypoint needed to test provider substitution. It also records filter behavior so later TDD loops use reliable commands.
 
-Next, implement and test similar-artist retrieval and resolution in small TDD slices: query
-similar artists for each seed artist, filter seeds from similar candidates, resolve to Apple
-catalog artist IDs using MBID-first and normalized-name fallback, deduplicate, and continue
-when individual similar artists cannot be resolved.
+Milestone 2 (steps 17-44) implements similar discovery in granular red/green slices: provider request/parsing, seed filtering, artist resolution, deduplication, and full DD test activation with real assertions.
 
-Then implement non-fatal failure handling for Last.fm outages and Last.fm auth failures, with
-precise log codes and continuation semantics.
+Milestone 3 (steps 45-60) adds non-fatal Last.fm failure behavior and activates auth-related DD tests for Last.fm key and auth-failure continuation.
 
-After similar discovery is stable, apply the configurable similar-artist track cap per playlist
-(DD-019), then add dislike-based artist filtering from Apple ratings endpoints (DD-020..DD-022).
+Milestone 4 (steps 61-70) adds deterministic similar-track capping by threading explicit similar-artist IDs into playlist planning.
 
-Finally, run the full suite, confirm all Phase 2 DD tests are active and passing, and update this
-plan with completion evidence and retrospective notes.
+Milestone 5 (steps 71-88) adds dislike-based artist exclusion from song/album ratings, including logging and DD activation.
+
+Milestone 6 (steps 89-94) runs full validation, updates this living document, and finalizes commits.
 
 ## Milestones and Validation Targets
 
 ### Milestone 1: Foundations and Fixtures
 
-Outcome: Last.fm fixture set exists, provider abstraction types compile, and tests can load Last.fm
-fixtures deterministically.
+Outcome: Last.fm fixtures exist, provider abstraction compiles, harness can run with explicit provider injection.
 
 Validation target:
 
 - Build succeeds.
-- Existing active tests remain green.
+- Full summary remains: 109 passed, 35 ignored, 0 failed, 0 errored.
 - No DD activation yet.
 
 ### Milestone 2: Similar Discovery Core
 
-Outcome: DD-009..DD-015 and DD-018 are active and passing.
+Outcome: DD-009..DD-015 and DD-018 are active and passing with real assertions.
 
 Validation target:
 
-- New unit tests for provider and resolution helpers pass.
-- `SimilarArtistTests.fs` selected DDs are active and passing.
-- Full summary remains 0 failed and 0 errored.
+- Unit tests under `Unit.SyncEngine.SimilarArtists` pass.
+- `SimilarArtistTests.fs` DD-009..DD-015 and DD-018 are `testCase` (not `ptestCase`) with non-empty assertions.
+- Ignored count decreases by 8 (from 35 to 27), with additional pass-count increase from new unit tests.
 
 ### Milestone 3: Last.fm Failure Handling
 
@@ -140,261 +185,515 @@ Outcome: DD-016, DD-017, DD-061, DD-068, DD-069 are active and passing.
 
 Validation target:
 
-- Last.fm request includes `api_key` query parameter.
+- Last.fm requests include `api_key`.
 - Invalid key and unavailable-source paths log expected codes.
 - Sync continues without similar artists in non-fatal cases.
+- Ignored count decreases by 5 (from 27 to 22).
 
 ### Milestone 4: Similar-Artist Track Cap
 
-Outcome: DD-019 is active and passing with deterministic cap behavior.
+Outcome: DD-019 active/passing with deterministic 20% cap behavior.
 
 Validation target:
 
-- Per-playlist cap logic has unit coverage.
-- DD-019 passes with a controlled 20% cap scenario.
+- Unit tests under `Unit.PlaylistReconcile.SimilarCap` pass.
+- DD-019 passes with controlled 10-track/20%-cap scenario.
+- Ignored count decreases by 1 (from 22 to 21).
 
 ### Milestone 5: Artist Dislike Filtering
 
-Outcome: DD-020..DD-022 are active and passing.
+Outcome: DD-020..DD-022 active and passing.
 
 Validation target:
 
-- Ratings endpoints are queried.
-- Disliked artists are excluded from playlist adds.
-- Exclusion log entries include artist names.
+- Ratings endpoints queried.
+- Disliked artists excluded from candidate releases.
+- Exclusion logs contain artist names.
+- Ignored count decreases by 3 (from 21 to 18).
 
 ### Milestone 6: Final Gate
 
-Outcome: all Phase 2 scoped DD tests active/passing and full suite green.
+Outcome: all Phase 2-scoped DD tests active/passing and full suite green.
 
 Validation target:
 
 - `nix develop -c dotnet build packages/dropd/dropd.sln` succeeds.
-- Full test summary reports 0 failed and 0 errored.
-- Remaining pending tests are only out-of-scope DDs.
+- Full summary reports 0 failed and 0 errored.
+- Remaining 18 ignored tests correspond only to out-of-scope DDs.
 
 ## Concrete Steps
 
 Run every command from repository root unless stated otherwise.
 
-### Milestone 1 steps
+### Milestone 1 steps (foundations)
 
-1. Create Last.fm fixture directory:
+1. Verify baseline and save current summary counts:
+
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary
+
+   Expected: 109 passed, 35 ignored, 0 failed, 0 errored.
+
+2. Create Last.fm fixture directory:
 
        mkdir -p packages/dropd/tests/Dropd.Tests/Fixtures/lastfm
 
-2. Add deterministic Last.fm fixtures:
+3. Create `packages/dropd/tests/Dropd.Tests/Fixtures/lastfm/similar-bonobo.json` with:
 
-   - `similar-bonobo.json`
-   - `similar-radiohead.json`
-   - `similar-invalid-key.json` (error code 10 payload)
-   - `similar-not-found.json` (error code 6 payload)
+       {
+         "similarartists": {
+           "artist": [
+             { "name": "Burial", "mbid": "9ea80bb8-4bcb-4188-9e0d-4156b187c6f9", "match": "0.91" },
+             { "name": "The  Black  Keys", "mbid": "d15721d3-c0bc-4834-be19-e8d5623cb4b9", "match": "0.88" },
+             { "name": "Bonobo", "mbid": "29525428-8f2e-4f62-9c12-9d4f0f6a9e70", "match": "0.55" },
+             { "name": "NoMatch", "mbid": "", "match": "0.44" }
+           ]
+         }
+       }
 
-3. Add Apple artist-resolution fixtures:
+4. Create `packages/dropd/tests/Dropd.Tests/Fixtures/lastfm/similar-radiohead.json` with:
 
-   - `artist-search-burial-by-mbid.json`
-   - `artist-search-black-keys-by-name.json`
-   - `artist-search-empty.json`
+       {
+         "similarartists": {
+           "artist": [
+             { "name": "Burial", "mbid": "9ea80bb8-4bcb-4188-9e0d-4156b187c6f9", "match": "0.77" },
+             { "name": " Four   Tet ", "mbid": "f64deeb5-14e1-4c10-9ecf-18cf7f4de2bd", "match": "0.74" }
+           ]
+         }
+       }
 
-4. Add Apple ratings fixtures:
+5. Create `packages/dropd/tests/Dropd.Tests/Fixtures/lastfm/similar-invalid-key.json` with:
 
-   - `ratings-songs-dislikes.json`
-   - `ratings-albums-dislikes.json`
+       {
+         "error": 10,
+         "message": "Invalid API key - You must be granted a valid key by last.fm"
+       }
 
-5. Update `packages/dropd/tests/Dropd.Tests/TestData.fs` with Last.fm fixture helpers:
+6. Create `packages/dropd/tests/Dropd.Tests/Fixtures/lastfm/similar-not-found.json` with:
+
+       {
+         "error": 6,
+         "message": "The artist you supplied could not be found"
+       }
+
+7. Create Apple artist search fixtures:
+
+   - `packages/dropd/tests/Dropd.Tests/Fixtures/apple/artist-search-burial.json`
+
+         {
+           "results": {
+             "artists": {
+               "data": [
+                 { "id": "14294754", "type": "artists", "attributes": { "name": "Burial" } },
+                 { "id": "999", "type": "artists", "attributes": { "name": "Burial (DJ)" } }
+               ]
+             }
+           }
+         }
+
+   - `packages/dropd/tests/Dropd.Tests/Fixtures/apple/artist-search-black-keys.json`
+
+         {
+           "results": {
+             "artists": {
+               "data": [
+                 { "id": "136975", "type": "artists", "attributes": { "name": "the black keys" } }
+               ]
+             }
+           }
+         }
+
+   - `packages/dropd/tests/Dropd.Tests/Fixtures/apple/artist-search-four-tet.json`
+
+         {
+           "results": {
+             "artists": {
+               "data": [
+                 { "id": "390999", "type": "artists", "attributes": { "name": "Four Tet" } }
+               ]
+             }
+           }
+         }
+
+   - `packages/dropd/tests/Dropd.Tests/Fixtures/apple/artist-search-empty.json`
+
+         {
+           "results": {
+             "artists": {
+               "data": []
+             }
+           }
+         }
+
+8. Create Apple ratings fixtures:
+
+   - `packages/dropd/tests/Dropd.Tests/Fixtures/apple/ratings-songs-dislikes.json`
+
+         {
+           "data": [
+             {
+               "id": "song-1",
+               "type": "ratings",
+               "attributes": {
+                 "value": -1,
+                 "artistName": "BadArtist"
+               }
+             },
+             {
+               "id": "song-2",
+               "type": "ratings",
+               "attributes": {
+                 "value": 1,
+                 "artistName": "GoodArtist"
+               }
+             }
+           ]
+         }
+
+   - `packages/dropd/tests/Dropd.Tests/Fixtures/apple/ratings-albums-dislikes.json`
+
+         {
+           "data": [
+             {
+               "id": "album-1",
+               "type": "ratings",
+               "attributes": {
+                 "value": -1,
+                 "artistName": "BadArtist"
+               }
+             },
+             {
+               "id": "album-2",
+               "type": "ratings",
+               "attributes": {
+                 "value": 1,
+                 "artistName": "OtherArtist"
+               }
+             }
+           ]
+         }
+
+9. Update `packages/dropd/tests/Dropd.Tests/TestData.fs` with helper functions:
 
    - `lastFmFixture : string -> string`
    - `okLastFmFixture : string -> CannedResponse`
 
-6. Add provider contracts in `packages/dropd/src/Dropd.Core/ApiContracts.fs`:
+10. Update `packages/dropd/src/Dropd.Core/ApiContracts.fs`:
 
-   - `SimilarArtistProviderError`
-   - `SimilarArtistProvider`
-   - Extend `DiscoveryResult` with `SimilarArtists: DiscoveredArtist list`
+    - add `SimilarArtistProviderError`
+    - add `SimilarArtistProvider`
+    - extend `DiscoveryResult` with `SimilarArtists: DiscoveredArtist list`
 
-7. Create `packages/dropd/src/Dropd.Core/SimilarArtists.fs` for provider parsing and Last.fm implementation.
+11. Create `packages/dropd/src/Dropd.Core/SimilarArtists.fs` with:
 
-8. Update `packages/dropd/src/Dropd.Core/Dropd.Core.fsproj` compile order so `SimilarArtists.fs` compiles before `SyncEngine.fs`.
+    - Last.fm request builder
+    - Last.fm response parser
+    - provider constructor
 
-9. Build:
+12. Update `packages/dropd/src/Dropd.Core/Dropd.Core.fsproj` compile order so `SimilarArtists.fs` is compiled before `SyncEngine.fs`.
+
+13. Add `runSyncWithProvider` to `packages/dropd/tests/Dropd.Tests/TestHarness.fs`:
+
+    - same validation/runtime path as `runSync`
+    - calls `SyncEngine.runSyncWithProvider`
+    - preserves `knownPlaylistIds` as `Map.empty` for harness runs
+
+14. Confirm filter behavior with active test name:
+
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Unit.SyncEngine.AuthAndLogs"
+
+15. Build and full-summary check:
 
        nix develop -c dotnet build packages/dropd/dropd.sln
-
-10. Run full summary:
-
        nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary
 
-11. Commit:
+16. Commit:
 
-       jj commit -m "phase2: add similar-artist provider contracts and deterministic fixtures"
+       jj commit -m "phase2: add similar-artist contracts, fixtures, and harness provider entrypoint"
 
 ### Milestone 2 steps (DD-009..DD-015, DD-018)
 
-12. Add/extend unit tests in `packages/dropd/tests/Dropd.Tests/SyncEngineUnitTests.fs` under `Unit.SyncEngine.SimilarArtists`:
+17. In `packages/dropd/tests/Dropd.Tests/SyncEngineUnitTests.fs`, add `testList "Unit.SyncEngine.SimilarArtists"` with test 1 (red): Last.fm request query contains `method=artist.getSimilar`, `artist=<seed name>`, `format=json`, `limit=10`.
 
-   - Last.fm request includes `method=artist.getSimilar` and `artist=<seed-name>`.
-   - Similar candidates remove seed artists by normalized name.
-   - Resolution prefers MBID lookup route when MBID exists.
-   - Resolution falls back to normalized name matching when MBID missing.
-   - Unresolvable similar artists are skipped without abort.
-   - Resolved similar artists deduplicate by catalog artist ID.
-
-13. Run unit filter (red phase expected initially):
+18. Run only this test list (expect fail/red):
 
        nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Unit.SyncEngine.SimilarArtists"
 
-14. Implement in `packages/dropd/src/Dropd.Core/SimilarArtists.fs`:
+19. In `packages/dropd/src/Dropd.Core/SimilarArtists.fs`, implement request builder and provider call; rerun filter (expect at least first test green).
 
-   - Last.fm JSON parsing for success and error payloads.
-   - Mapping of error code 10 to auth failure.
-   - Mapping of non-auth provider failures.
+20. Add unit test 2 (red): parser maps Last.fm error code 10 to `AuthFailure`.
 
-15. Implement in `packages/dropd/src/Dropd.Core/SyncEngine.fs`:
+21. Implement parser branch for code 10; rerun filter.
 
-   - `runSyncWithProvider` orchestration entry point.
-   - Similar retrieval for each seed artist.
-   - Seed-filtering, MBID-first resolution, fallback name normalization.
-   - Deduplication and unresolved-artist skip behavior.
+22. Add unit test 3 (red): parser maps non-auth error payloads or non-2xx status to `Unavailable`/`MalformedResponse`.
 
-16. Keep existing `runSync` as wrapper using default Last.fm provider.
+23. Implement non-auth error mapping; rerun filter.
 
-17. Activate DD tests in `packages/dropd/tests/Dropd.Tests/SimilarArtistTests.fs`:
+24. Add unit test 4 (red): seed filtering removes normalized-name matches (e.g., seed `"Bonobo"`, candidate `" bonobo "`).
 
-   - DD-009..DD-015 (`ptestCase` -> `testCase`)
-   - DD-018 (`ptestCase` -> `testCase`)
+25. In `SyncEngine.fs`, implement helper to exclude seed artists by `Normalization.normalizeText`; rerun filter.
 
-18. Re-run unit filter; expect pass.
+26. Add unit test 5 (red): artist resolution queries `/v1/catalog/us/search` with `types=artists` and `limit=5`.
 
-19. Run full summary; expect 0 failed and 0 errored.
+27. Implement search request helper in `SyncEngine.fs`; rerun filter.
 
-20. Commit:
+28. Add unit test 6 (red): fallback name matching resolves `" The  Black  Keys "` against catalog `"the black keys"`.
 
-       jj commit -m "phase2: implement similar-artist discovery core DD-009..DD-015 and DD-018"
+29. Implement normalized fallback matching; rerun filter.
+
+30. Add unit test 7 (red): unresolved artist (empty search results) is skipped without abort.
+
+31. Implement skip-on-unresolved behavior; rerun filter.
+
+32. Add unit test 8 (red): deduplicate resolved similar artists by catalog ID.
+
+33. Implement dedup by catalog ID before release fetch; rerun filter.
+
+34. Add new orchestration entrypoint in `SyncEngine.fs`:
+
+    - `runSyncWithProvider provider config runtime knownPlaylistIds`
+    - existing `runSync` wraps this with default Last.fm provider
+
+35. Keep existing `runSync` signature intact:
+
+    - includes `knownPlaylistIds: Map<string,string>`
+
+36. Update all `DiscoveryResult` constructors in tests and source to include `SimilarArtists`.
+
+37. In `packages/dropd/tests/Dropd.Tests/SimilarArtistTests.fs`, replace DD-009 body (still `ptestCase`):
+
+    - setup Last.fm route for Bonobo and base Apple routes
+    - run sync
+    - assert request contains `Service = "lastfm"`, `Path = "/2.0"`, `("method","artist.getSimilar")`, `("artist","Bonobo")`
+
+38. DD-010 body:
+
+    - Last.fm returns `Bonobo` as similar
+    - assert no Apple catalog artist query for seed artist duplicate caused by similar flow
+
+39. DD-011 body:
+
+    - Last.fm returns `Burial` with MBID
+    - Apple search fixture returns `id = 14294754`
+    - assert release request includes `/v1/catalog/us/artists/14294754/albums`
+
+40. DD-012 body:
+
+    - Last.fm returns `" The  Black  Keys "`
+    - Apple search returns `"the black keys"`
+    - assert resolved artist release request uses `id = 136975`
+
+41. DD-013/DD-014/DD-015/DD-018 bodies:
+
+    - DD-013: two seeds map to same similar artist; assert only one release query for that artist ID
+    - DD-014: `NoMatch` uses `artist-search-empty.json`; assert no release query for unresolved artist
+    - DD-015: mixed unresolved + resolvable; assert resolvable artist still queried
+    - DD-018: call `runSyncWithProvider` with fake provider returning known artist; assert no Last.fm request was made and fake provider artist ID is queried
+
+42. Convert DD-009..DD-015 and DD-018 from `ptestCase` to `testCase` only after bodies/assertions are complete.
+
+43. Run validation:
+
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Unit.SyncEngine.SimilarArtists"
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Similar Artist Discovery"
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary
+
+44. Commit in two logical commits:
+
+       jj commit -m "phase2: implement similar-provider requests and parsing"
+       jj commit -m "phase2: implement similar discovery orchestration and activate DD-009..DD-015 DD-018"
 
 ### Milestone 3 steps (DD-016, DD-017, DD-061, DD-068, DD-069)
 
-21. Add unit tests in `Unit.SyncEngine.SimilarArtists` for failure paths:
+45. Add unit test (red) in `Unit.SyncEngine.SimilarArtists`: Last.fm HTTP 503 logs `SimilarArtistServiceUnavailable` and sync outcome is not `Aborted`.
 
-   - Last.fm unavailable (HTTP 503) logs `SimilarArtistServiceUnavailable`.
-   - Last.fm auth failure (error 10 in HTTP 200 body) logs `LastFmAuthFailure`.
-   - Both cases continue sync without aborting.
+46. Implement this logging branch in `SyncEngine.fs`; rerun unit filter.
 
-22. Add auth-specific unit test in `Unit.SyncEngine.AuthAndLogs`:
+47. Add unit test (red): Last.fm HTTP 200 with error code 10 logs `LastFmAuthFailure` and sync continues.
 
-   - Last.fm requests include `api_key` from config (DD-061).
+48. Implement auth-failure logging branch; rerun unit filter.
 
-23. Implement Last.fm request/query construction in `SimilarArtists.fs` to always include:
+49. Add unit test (red) in `Unit.SyncEngine.AuthAndLogs`: Last.fm requests include `api_key` from config.
 
-   - `method=artist.getSimilar`
-   - `artist=<name>`
-   - `api_key=<configured key>`
-   - `format=json`
-   - `limit=10`
+50. Implement `api_key` query inclusion in `SimilarArtists.fs`; rerun unit filter.
 
-24. Implement failure logging in `SyncEngine.fs`:
+51. In `packages/dropd/tests/Dropd.Tests/AuthenticationTests.fs`, implement DD-061 body:
 
-   - `SimilarArtistServiceUnavailable` for transport/status failures.
-   - `LastFmAuthFailure` for Last.fm body error code 10.
+    - setup includes one Last.fm route
+    - run sync
+    - assert Last.fm request query contains `("api_key","lastfm-key")`
 
-25. Activate tests:
+52. Implement DD-068 body:
 
-   - `SimilarArtistTests.fs`: DD-016, DD-017
-   - `AuthenticationTests.fs`: DD-061, DD-068, DD-069
+    - Last.fm route returns `similar-invalid-key.json`
+    - assert logs contain `LastFmAuthFailure`
 
-26. Run full summary and verify these tests are active and passing.
+53. Implement DD-069 body:
 
-27. Commit:
+    - same invalid key route + valid Apple data
+    - assert outcome is `Success` or `PartialFailure`, not `Aborted`
 
-       jj commit -m "phase2: add lastfm auth handling and non-fatal similar-source failure behavior"
+54. In `SimilarArtistTests.fs`, implement DD-016 body:
 
-### Milestone 4 steps (DD-019)
+    - Last.fm route returns status 503
+    - assert `SimilarArtistServiceUnavailable` log exists
 
-28. Add unit tests in `packages/dropd/tests/Dropd.Tests/PlaylistReconcileUnitTests.fs` under `Unit.PlaylistReconcile.SimilarCap`:
+55. Implement DD-017 body:
 
-   - For max 20% and 10 desired tracks with 5 similar tracks, include at most 2 similar tracks.
-   - Cap calculation is deterministic and stable across runs.
-   - Non-similar tracks are not removed to satisfy cap.
+    - Last.fm 503 + valid seed/label Apple routes + playlist routes
+    - assert sync still reaches playlist add/create requests
 
-29. Implement cap logic in `packages/dropd/src/Dropd.Core/PlaylistReconcile.fs`:
+56. Convert DD-016 and DD-017 from `ptestCase` to `testCase`.
 
-   - Use `config.SimilarArtistMaxPercent`.
-   - Use `discovery.SimilarArtists` to identify similar-source releases by artist ID.
-   - Limit similar tracks per playlist before add/remove plan finalization.
+57. Convert DD-061, DD-068, DD-069 from `ptestCase` to `testCase`.
 
-30. Update any affected call sites and unit record construction for `DiscoveryResult.SimilarArtists`.
+58. Run targeted validation:
 
-31. Activate DD-019 in `SimilarArtistTests.fs`.
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Unit.SyncEngine.SimilarArtists"
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Authentication.DD-06"
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Similar Artist Discovery.DD-01"
 
-32. Run full summary; verify DD-019 passes.
+59. Run full summary.
 
-33. Commit:
+60. Commit:
 
-       jj commit -m "phase2: enforce similar-artist playlist percentage cap DD-019"
+       jj commit -m "phase2: add non-fatal lastfm failure handling and activate DD-016 DD-017 DD-061 DD-068 DD-069"
 
-### Milestone 5 steps (DD-020..DD-022)
+### Milestone 4 steps (DD-019 similar cap)
 
-34. Add unit tests in `Unit.SyncEngine.ArtistFiltering` for:
+61. In `packages/dropd/src/Dropd.Core/PlaylistReconcile.fs`, change planning API to thread similar-source identity:
 
-   - Fetching `/v1/me/ratings/songs` and `/v1/me/ratings/albums`.
-   - Parsing dislike ratings (`value = -1`) into excluded artist names.
-   - Filtering candidate releases by excluded artist names.
+    - add `similarArtistIds: Set<CatalogArtistId>` parameter to `computePlan`
+    - add `similarArtistMaxPercent: int` parameter to `computePlan`
 
-35. Run unit filter (red expected initially):
+62. Add `Unit.PlaylistReconcile.SimilarCap` tests in `packages/dropd/tests/Dropd.Tests/PlaylistReconcileUnitTests.fs`:
+
+    - case A: desired tracks = 10 total, 5 from similar artists, cap=20 => add at most 2 similar tracks
+    - case B: repeated runs are deterministic (same kept similar track IDs in same order)
+    - case C: non-similar tracks are never removed to satisfy cap
+
+63. Run SimilarCap tests (expect red):
+
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Unit.PlaylistReconcile.SimilarCap"
+
+64. Implement capping algorithm in `computePlan`:
+
+    - build desired track list in stable release order
+    - partition desired tracks into similar/non-similar by release artist ID in `similarArtistIds`
+    - compute `allowedSimilar = floor((similarArtistMaxPercent * totalDesired) / 100)`
+    - keep first `allowedSimilar` similar tracks in stable order
+    - include all non-similar tracks
+
+65. Update `reconcilePlaylists` call site to pass:
+
+    - `similarArtistMaxPercent` from config
+    - `similarArtistIds` built from `discovery.SimilarArtists`
+
+66. Update all tests constructing `DiscoveryResult` to include `SimilarArtists`.
+
+67. In `packages/dropd/tests/Dropd.Tests/SimilarArtistTests.fs`, implement DD-019 body:
+
+    - setup produces 10 desired tracks with 5 from similar artists
+    - config `SimilarArtistMaxPercent = 20`
+    - assert playlist-add request body includes at most 2 similar-artist track IDs
+
+68. Convert DD-019 from `ptestCase` to `testCase`.
+
+69. Run validation (unit + Similar Artist Discovery + full summary).
+
+70. Commit:
+
+       jj commit -m "phase2: enforce deterministic similar-artist cap and activate DD-019"
+
+### Milestone 5 steps (DD-020..DD-022 artist filtering)
+
+71. In `packages/dropd/tests/Dropd.Tests/SyncEngineUnitTests.fs`, add `testList "Unit.SyncEngine.ArtistFiltering"` test 1 (red): requests `/v1/me/ratings/songs` and `/v1/me/ratings/albums`.
+
+72. Run filter (expect red):
 
        nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Unit.SyncEngine.ArtistFiltering"
 
-36. Implement in `SyncEngine.fs`:
+73. In `SyncEngine.fs`, implement `fetchSongRatings` and `fetchAlbumRatings`; rerun filter.
 
-   - `fetchSongRatings`
-   - `fetchAlbumRatings`
-   - `collectExcludedArtists`
-   - filtering of release candidates before playlist reconciliation
+74. Add unit test 2 (red): parse dislikes (`value = -1`) and collect artist names from `attributes.artistName`.
 
-37. Add log emission for excluded artists with code `ExcludedDislikedArtist` and artist name in log data.
+75. Implement `collectExcludedArtists`; rerun filter.
 
-38. Activate DD tests in `packages/dropd/tests/Dropd.Tests/ArtistFilteringTests.fs`:
+76. Add unit test 3 (red): candidate releases by excluded artists are filtered out before reconciliation.
 
-   - DD-020, DD-021, DD-022 (`ptestCase` -> `testCase`)
+77. Implement candidate-release filtering; rerun filter.
 
-39. Re-run unit filter; expect pass.
+78. Add unit test 4 (red): each excluded artist emits `ExcludedDislikedArtist` log with `artist` in data.
 
-40. Run full summary; expect DD-020..DD-022 active/passing and overall 0 failed, 0 errored.
+79. Implement exclusion logging; rerun filter.
 
-41. Commit:
+80. In `packages/dropd/tests/Dropd.Tests/ArtistFilteringTests.fs`, implement DD-020 body:
 
-       jj commit -m "phase2: implement dislike-based artist filtering DD-020..DD-022"
+    - setup ratings endpoints using new fixtures
+    - assert requests include both ratings endpoints
+
+81. Implement DD-021 body:
+
+    - disliked artist appears in discovered releases
+    - assert playlist add payload excludes tracks by `BadArtist`
+
+82. Implement DD-022 body:
+
+    - assert log includes `Code = ExcludedDislikedArtist` and `Data.["artist"] = "BadArtist"`
+
+83. Convert DD-020..DD-022 from `ptestCase` to `testCase`.
+
+84. Run targeted filters:
+
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Unit.SyncEngine.ArtistFiltering"
+       nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary --filter "Artist Filtering"
+
+85. Run full summary.
+
+86. Commit (implementation):
+
+       jj commit -m "phase2: add ratings retrieval and disliked-artist exclusion"
+
+87. Commit (DD activation):
+
+       jj commit -m "phase2: activate DD-020 DD-021 DD-022 with asserted behavior"
+
+88. Verify ignored count is now 18.
 
 ### Milestone 6 steps (final gate)
 
-42. Run full build and tests:
+89. Full build + tests:
 
        nix develop -c dotnet build packages/dropd/dropd.sln
        nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary
 
-43. Confirm active/passing coverage now includes:
+90. Confirm active/passing coverage includes:
 
-   - DD-009..DD-019
-   - DD-020..DD-022
-   - DD-061, DD-068, DD-069
+    - DD-009..DD-019
+    - DD-020..DD-022
+    - DD-061, DD-068, DD-069
 
-44. Update this plan sections:
+91. Confirm remaining ignored tests are only out-of-scope DDs.
 
-   - Progress (with timestamps)
-   - Surprises & Discoveries
-   - Decision Log
-   - Outcomes & Retrospective
+92. Update this plan sections with timestamps and evidence:
 
-45. Final commit:
+    - Progress
+    - Surprises & Discoveries
+    - Decision Log
+    - Outcomes & Retrospective
+
+93. Final commit:
 
        jj commit -m "phase2: complete similar discovery, artist filtering, and lastfm auth requirements"
+
+94. Optional: create follow-up plan ticket for DD-063/DD-070..DD-073 and resilience DDs.
 
 ## Validation and Acceptance
 
 Phase 2 is accepted only when all checks below are true:
 
-1. Similar-artist discovery executes via a provider abstraction, not direct inline Last.fm endpoint logic in orchestration code (DD-018).
+1. Similar-artist discovery executes via a provider abstraction, not direct inline Last.fm logic in orchestration (DD-018).
 2. Active DD tests include DD-009..DD-019, DD-020..DD-022, DD-061, DD-068, DD-069.
-3. Last.fm auth failure (`error":10` in HTTP 200 body) logs `LastFmAuthFailure` and does not abort sync.
+3. Last.fm auth failure (`"error":10` in HTTP 200 body) logs `LastFmAuthFailure` and does not abort sync.
 4. Last.fm unavailability logs `SimilarArtistServiceUnavailable` and sync continues with seed+label data.
 5. Similar-artist track contributions are capped by `SimilarArtistMaxPercent` per playlist (DD-019).
 6. Ratings endpoints for songs and albums are requested and disliked artists are excluded from playlist population (DD-020, DD-021).
@@ -429,6 +728,7 @@ Expected phase-end artifacts:
   - `packages/dropd/src/Dropd.Core/PlaylistReconcile.fs`
   - `packages/dropd/src/Dropd.Core/Dropd.Core.fsproj`
   - `packages/dropd/tests/Dropd.Tests/TestData.fs`
+  - `packages/dropd/tests/Dropd.Tests/TestHarness.fs`
   - `packages/dropd/tests/Dropd.Tests/SyncEngineUnitTests.fs`
   - `packages/dropd/tests/Dropd.Tests/PlaylistReconcileUnitTests.fs`
   - `packages/dropd/tests/Dropd.Tests/SimilarArtistTests.fs`
@@ -469,6 +769,7 @@ In `packages/dropd/src/Dropd.Core/SyncEngine.fs`, define:
       ApiContracts.SimilarArtistProvider ->
       Config.ValidSyncConfig ->
       ApiContracts.ApiRuntime ->
+      Map<string,string> ->
       Types.SyncOutcome * ApiContracts.ObservedSync
 
 And keep:
@@ -476,9 +777,22 @@ And keep:
     val runSync :
       Config.ValidSyncConfig ->
       ApiContracts.ApiRuntime ->
+      Map<string,string> ->
       Types.SyncOutcome * ApiContracts.ObservedSync
 
 `runSync` must call `runSyncWithProvider` with the default Last.fm provider.
+
+In `packages/dropd/src/Dropd.Core/PlaylistReconcile.fs`, update:
+
+    val computePlan :
+      DateOnly ->
+      int ->                    // rollingWindowDays
+      int ->                    // similarArtistMaxPercent
+      Set<Types.CatalogArtistId> ->
+      Config.PlaylistDefinition ->
+      ApiContracts.DiscoveredRelease list ->
+      ExistingTrack list ->
+      ApiContracts.PlaylistPlan
 
 Dependencies remain:
 
