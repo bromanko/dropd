@@ -23,16 +23,12 @@ The required acceptance coverage for this phase is:
 
 - [x] (2026-03-03 18:31Z) Drafted initial Phase 2 scope and milestone sequence.
 - [x] (2026-03-04 16:30Z) Amended plan to resolve review gaps: MBID behavior, fixture schemas, granular TDD steps, DD test bodies, and cap-tracking design.
-- [ ] Milestone 1.1 complete: Last.fm + Apple Phase 2 fixtures added with deterministic payloads.
-- [ ] Milestone 1.2 complete: provider contracts, harness provider entrypoint, and compile-order changes build cleanly.
-- [ ] Milestone 1.3 complete: filter behavior clarified in plan (`--filter` works for active tests; `ptestCase` remains ignored).
-- [ ] Milestone 2.1 complete: provider parser/request unit tests written and passing.
-- [ ] Milestone 2.2 complete: orchestration/unit tests for similar retrieval, filtering, resolution, and dedup are passing.
-- [ ] Milestone 2.3 complete: DD-009..DD-015 and DD-018 activated with real assertions and passing.
-- [ ] Milestone 3 complete: DD-016, DD-017, DD-061, DD-068, DD-069 activated/passing.
-- [ ] Milestone 4 complete: deterministic similar-track cap implemented and DD-019 active/passing.
-- [ ] Milestone 5 complete: dislike artist filtering implemented and DD-020..DD-022 active/passing.
-- [ ] Milestone 6 complete: full-suite gate, plan retrospective, and final commit.
+- [x] (2026-03-03 20:48Z) Milestone 1 complete: Last.fm + Apple Phase 2 fixtures added, provider contracts and harness entrypoint in place, compile order updated, build green at 109 passed / 35 ignored.
+- [x] (2026-03-03 20:54Z) Milestone 2 complete: 10 unit tests + 8 DD tests (DD-009..DD-015, DD-018) active and passing. Suite at 128 passed / 27 ignored.
+- [x] (2026-03-03 20:55Z) Milestone 3 complete: DD-016, DD-017, DD-061, DD-068, DD-069 activated and passing. Suite at 133 passed / 22 ignored.
+- [x] (2026-03-03 20:58Z) Milestone 4 complete: deterministic similar-track cap implemented with 3 unit tests. DD-019 active/passing. Suite at 137 passed / 21 ignored.
+- [x] (2026-03-03 21:00Z) Milestone 5 complete: dislike artist filtering with 4 unit tests. DD-020..DD-022 active/passing. Suite at 144 passed / 18 ignored.
+- [x] (2026-03-03 21:00Z) Milestone 6 complete: full-suite gate passed. 144 passed, 18 ignored, 0 failed, 0 errored. All 18 remaining ignored tests are out-of-scope DDs.
 
 ## Surprises & Discoveries
 
@@ -46,6 +42,12 @@ The required acceptance coverage for this phase is:
 
 - Observation: Current baseline before Phase 2 work is green with substantial pending scope.
   Evidence: `nix develop -c dotnet run --project packages/dropd/tests/Dropd.Tests -- --summary` shows 109 passed, 35 ignored, 0 failed, 0 errored.
+
+- Observation: Default Last.fm provider must be created with the recording-wrapped runtime, not the original runtime, or Last.fm requests are not captured in the observable log.
+  Evidence: DD-009 initially failed because `runSync` created the provider with the raw runtime before `runSyncWithProvider` wrapped it with recording. Fixed by restructuring to `runSyncInternal` which creates the recording runtime first, then resolves the provider.
+
+- Observation: The `favorited-artists.json` fixture returns artist ID 29525428 which is not in the library artists, creating an unexpected third seed artist. This artifact is benign but must be accounted for in negative-list assertions (DD-014).
+  Evidence: DD-014 initially failed due to an album request for `/v1/catalog/us/artists/29525428/albums`.
 
 ## Decision Log
 
@@ -79,7 +81,26 @@ The required acceptance coverage for this phase is:
 
 ## Outcomes & Retrospective
 
-(To be filled at major milestones and completion.)
+Phase 2 is complete. All acceptance criteria are met:
+
+1. Similar-artist discovery executes via a provider abstraction (`SimilarArtistProvider`) — DD-018 verified by injecting a fake provider.
+2. All 17 Phase 2 DD tests are active: DD-009..DD-019, DD-020..DD-022, DD-061, DD-068, DD-069.
+3. Last.fm auth failure (`"error":10` in HTTP 200 body) logs `LastFmAuthFailure` and does not abort sync — DD-068, DD-069.
+4. Last.fm unavailability (HTTP 503) logs `SimilarArtistServiceUnavailable` and sync continues — DD-016, DD-017.
+5. Similar-artist track cap at `SimilarArtistMaxPercent` is deterministic and enforced — DD-019.
+6. Ratings endpoints for songs and albums are queried; disliked artists excluded — DD-020, DD-021.
+7. Excluded disliked artists are logged by normalized name — DD-022.
+8. Full suite: 144 passed, 18 ignored, 0 failed, 0 errored.
+9. Remaining 18 ignored tests are DD-063, DD-070..DD-073, DD-076..DD-078, DD-080..DD-089 — all out of scope.
+
+Key implementation decisions:
+- `runSyncInternal` pattern ensures recording runtime is shared by both Apple calls and the default Last.fm provider.
+- `computePlan` threads explicit `similarArtistIds: Set<CatalogArtistId>` for deterministic cap computation without modifying release contracts.
+- Ratings retrieval is non-fatal: if either endpoint fails, filtering is skipped silently.
+
+Test coverage added: 35 new tests (109→144), 17 ignored→active DD conversions.
+
+Date: 2026-03-03
 
 ## Context and Orientation
 
