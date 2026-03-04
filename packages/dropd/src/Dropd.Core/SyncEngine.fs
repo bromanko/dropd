@@ -479,10 +479,16 @@ module SyncEngine =
     let resolveArtistByNamePublic (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (artistName: string) =
         resolveArtistByName config runtime artistName
 
+    /// Maximum number of seed artists to query for similar discovery.
+    /// Keeps request volume manageable against real APIs — 20 seeds ×
+    /// 10 similar × Apple search + album = ~400 requests at most.
+    let private maxSimilarSeedArtists = 20
+
     /// Discover similar artists for all seed artists via the provider, resolve
     /// them to Apple Music catalog IDs, and return a deduplicated list.
-    /// Provider calls are fanned out concurrently via Async.Parallel; an auth
-    /// failure from any call short-circuits further processing.
+    /// Only the first ``maxSimilarSeedArtists`` seed artists are queried to
+    /// keep request volume bounded. Provider calls are sequential to avoid
+    /// rate-limit issues; an auth failure short-circuits further processing.
     /// Errors from the provider are logged and treated as non-fatal.
     let private discoverSimilarArtists
         (provider: AC.SimilarArtistProvider)
@@ -496,52 +502,68 @@ module SyncEngine =
             |> List.map (fun a -> Normalization.normalizeText a.Name)
             |> Set.ofList
 
-        // Fan out all provider calls concurrently and collect results.
-        let providerResults =
-            seedArtists
-            |> List.map (fun seed -> async {
-                let! result = provider.GetSimilar(seed.Name, None)
-                return seed, result
-            })
-            |> Async.Parallel
-            |> Async.RunSynchronously
+        let querySeedArtists =
+            if seedArtists.Length > maxSimilarSeedArtists then
+                appendLog
+                    AC.Info
+                    "SimilarArtistSeedCapped"
+                    $"Querying similar artists for {maxSimilarSeedArtists} of {seedArtists.Length} seed artists."
+                    (Map [ "total", string seedArtists.Length; "queried", string maxSimilarSeedArtists ])
+                seedArtists |> List.take maxSimilarSeedArtists
+            else
+                seedArtists
 
-        // Process results with a fold, short-circuiting on auth failure.
+        appendLog
+            AC.Info
+            "SimilarDiscoveryStarted"
+            $"Querying similar artists for {querySeedArtists.Length} seed artist(s)."
+            (Map [ "count", string querySeedArtists.Length; "provider", provider.Name ])
+
+        // Query provider sequentially to avoid rate-limit issues.
+        let mutable authFailed = false
+
+        let providerResults =
+            querySeedArtists
+            |> List.map (fun seed ->
+                if authFailed then
+                    seed, Error(AC.Unavailable(0, "skipped after auth failure"))
+                else
+                    let result = provider.GetSimilar(seed.Name, None) |> Async.RunSynchronously
+                    match result with
+                    | Error(AC.AuthFailure _) -> authFailed <- true
+                    | _ -> ()
+                    seed, result)
+
+        // Collect results, logging errors (auth failure was already flagged above).
         let rawSimilar =
             providerResults
-            |> Array.fold
-                (fun (authFailed, acc) (seed, result) ->
-                    if authFailed then (true, acc)
-                    else
-                        match result with
-                        | Ok artists ->
-                            let filtered =
-                                artists
-                                |> List.filter (fun a -> not (seedNormalized.Contains(Normalization.normalizeText a.Name)))
-                            (false, acc @ filtered)
-                        | Error(AC.AuthFailure message) ->
-                            appendLog
-                                AC.Error
-                                "LastFmAuthFailure"
-                                "Last.fm authentication failed."
-                                (Map [ "message", message ])
-                            (true, acc)
-                        | Error(AC.Unavailable(statusCode, message)) ->
-                            appendLog
-                                AC.Error
-                                "SimilarArtistServiceUnavailable"
-                                "Similar artist data source is unavailable."
-                                (Map [ "status", string statusCode; "message", message ])
-                            (false, acc)
-                        | Error(AC.MalformedResponse message) ->
-                            appendLog
-                                AC.Warning
-                                "SimilarArtistMalformedResponse"
-                                "Malformed response from similar artist provider."
-                                (Map [ "message", message ])
-                            (false, acc))
-                (false, [])
-            |> snd
+            |> List.collect (fun (_seed, result) ->
+                match result with
+                | Ok artists ->
+                    artists
+                    |> List.filter (fun a -> not (seedNormalized.Contains(Normalization.normalizeText a.Name)))
+                | Error(AC.AuthFailure message) ->
+                    appendLog
+                        AC.Error
+                        "LastFmAuthFailure"
+                        "Last.fm authentication failed."
+                        (Map [ "message", message ])
+                    []
+                | Error(AC.Unavailable(statusCode, message)) ->
+                    if statusCode > 0 then
+                        appendLog
+                            AC.Error
+                            "SimilarArtistServiceUnavailable"
+                            "Similar artist data source is unavailable."
+                            (Map [ "status", string statusCode; "message", message ])
+                    []
+                | Error(AC.MalformedResponse message) ->
+                    appendLog
+                        AC.Warning
+                        "SimilarArtistMalformedResponse"
+                        "Malformed response from similar artist provider."
+                        (Map [ "message", message ])
+                    [])
 
         // Deduplicate by normalized name before resolving.
         let uniqueSimilar =
@@ -555,13 +577,27 @@ module SyncEngine =
             |> snd
             |> List.rev
 
+        appendLog
+            AC.Info
+            "SimilarArtistCandidates"
+            $"Found {uniqueSimilar.Length} unique similar artist candidate(s) to resolve."
+            (Map [ "count", string uniqueSimilar.Length ])
+
         // Resolve each similar artist to an Apple Music catalog artist.
         let resolved =
             uniqueSimilar
             |> List.choose (fun similar -> resolveArtistByName config runtime similar.Name)
 
         // Deduplicate resolved artists by catalog ID.
-        resolved |> List.distinctBy (fun artist -> artist.Id)
+        let deduped = resolved |> List.distinctBy (fun artist -> artist.Id)
+
+        appendLog
+            AC.Info
+            "SimilarDiscoveryCompleted"
+            $"Resolved {deduped.Length} similar artist(s) to Apple Music catalog IDs."
+            (Map [ "resolved", string deduped.Length; "candidates", string uniqueSimilar.Length ])
+
+        deduped
 
     let private outcomeToText = function
         | Success -> "success"
