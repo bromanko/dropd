@@ -29,15 +29,45 @@ let tests =
 
           // DD-080: When an Apple Music API request returns HTTP 429 with a Retry-After header,
           // dropd shall wait for the indicated duration before retrying the request.
-          // Setup: Route Apple Music → Sequence [429 with Retry-After: 5; 200].
-          // Assert: Delay of ≥5s between first and second request. Retry succeeds.
-          ptestCase "DD-080 honors Retry-After header on 429" <| fun _ -> ()
+          testCase "DD-080 honors Retry-After header on 429" <| fun _ ->
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ]
+                          (Sequence [
+                              { StatusCode = 429; Body = """{"error":"rate limited"}"""; Headers = [ "Retry-After", "5" ]; DelayMs = None }
+                              okFixture "library-artists.json"
+                          ])
+                  ]
+
+              let output = runSync resilienceConfig setup
+
+              let libraryArtistRequests =
+                  output.Requests |> List.filter (fun r -> r.Path = "/v1/me/library/artists")
+              Expect.equal libraryArtistRequests.Length 2 "should make 2 requests to library-artists"
+
+              Expect.notEqual output.Outcome (Some(Aborted "LibraryArtistsFailed")) "outcome should not be aborted"
+
+              let retryLog = output.Logs |> List.tryFind (fun log -> log.Code = "RetryAfterWait")
+              Expect.isSome retryLog "should have RetryAfterWait log"
+              Expect.equal retryLog.Value.Data.["delay_ms"] "5000" "delay should be 5000ms"
 
           // DD-081: When an API request returns HTTP 429 without a Retry-After header,
           // dropd shall wait 2 seconds before retrying the request.
-          // Setup: Route Apple Music → Sequence [429 (no Retry-After); 200].
-          // Assert: Delay of ≥2s between first and second request.
-          ptestCase "DD-081 waits 2s on 429 without Retry-After" <| fun _ -> ()
+          testCase "DD-081 waits 2s on 429 without Retry-After" <| fun _ ->
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ]
+                          (Sequence [
+                              { StatusCode = 429; Body = """{"error":"rate limited"}"""; Headers = []; DelayMs = None }
+                              okFixture "library-artists.json"
+                          ])
+                  ]
+
+              let output = runSync resilienceConfig setup
+
+              let retryLog = output.Logs |> List.tryFind (fun log -> log.Code = "RetryAfterWait")
+              Expect.isSome retryLog "should have RetryAfterWait log"
+              Expect.equal retryLog.Value.Data.["delay_ms"] "2000" "delay should be 2000ms (default)"
 
           // DD-082: When an API request fails due to timeout, transient network error,
           // or HTTP 5xx response, dropd shall retry up to the configured retry limit

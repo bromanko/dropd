@@ -29,6 +29,9 @@ let private okResponse body : AC.ApiResponse =
 let private errorResponse code : AC.ApiResponse =
     { StatusCode = code; Body = """{"error":"fail"}"""; Headers = [] }
 
+let private responseWithHeaders code body headers : AC.ApiResponse =
+    { StatusCode = code; Body = body; Headers = headers }
+
 let private fakeRuntime (responses: AC.ApiResponse list) =
     let index = ref 0
     let callCount = ref 0
@@ -118,4 +121,38 @@ let retryTests =
             Seq.zip stats.ComputedDelays expected
             |> Seq.iteri (fun i (actual, (lo, hi)) ->
                 Expect.isTrue (actual >= lo && actual < hi) $"delay {i} = {actual} should be in [{lo}, {hi})")
+    ]
+
+[<Tests>]
+let rateLimitTests =
+    testList "Unit.ResilientPipeline.RateLimit" [
+        testCase "waits Retry-After seconds on 429" <| fun _ ->
+            let inner, _callCount = fakeRuntime [
+                responseWithHeaders 429 """{"error":"rate limited"}""" [ "Retry-After", "3" ]
+                okResponse """{"data":[]}"""
+            ]
+            let stats = createStats ()
+            let delay, delays = recordingDelay ()
+            let wrapped = wrap defaultPipelineConfig stats delay ignore (Some 42) inner
+
+            let response = wrapped.Execute dummyRequest |> Async.RunSynchronously
+
+            Expect.equal response.StatusCode 200 "should return 200 after retry"
+            Expect.equal delays.Count 1 "should record one delay"
+            Expect.equal delays.[0] 3000 "delay should be 3000ms (3 seconds)"
+
+        testCase "waits 2 seconds on 429 without Retry-After" <| fun _ ->
+            let inner, _callCount = fakeRuntime [
+                responseWithHeaders 429 """{"error":"rate limited"}""" []
+                okResponse """{"data":[]}"""
+            ]
+            let stats = createStats ()
+            let delay, delays = recordingDelay ()
+            let wrapped = wrap defaultPipelineConfig stats delay ignore (Some 42) inner
+
+            let response = wrapped.Execute dummyRequest |> Async.RunSynchronously
+
+            Expect.equal response.StatusCode 200 "should return 200 after retry"
+            Expect.equal delays.Count 1 "should record one delay"
+            Expect.equal delays.[0] 2000 "delay should be 2000ms (default 2 seconds)"
     ]
