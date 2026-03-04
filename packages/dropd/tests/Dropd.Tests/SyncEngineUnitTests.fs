@@ -614,3 +614,107 @@ let similarArtistTests =
               let deduped = artists |> List.distinctBy (fun a -> a.Id)
               Expect.equal deduped.Length 2 "should deduplicate by ID"
         ]
+
+[<Tests>]
+let artistFilteringUnitTests =
+    testList
+        "Unit.SyncEngine.ArtistFiltering"
+        [
+          testCase "fetchSongRatings requests /v1/me/ratings/songs"
+          <| fun _ ->
+              let runtime, state =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/me/ratings/songs"
+                          Query = []
+                          Response = Helpers.ok (fixture "ratings-songs-dislikes.json") } ]
+
+              let result = SyncEngine.fetchSongRatings validConfig runtime
+              Expect.isOk result "request should succeed"
+              Expect.equal state.Requests.Head.Path "/v1/me/ratings/songs" "should request song ratings"
+
+          testCase "fetchAlbumRatings requests /v1/me/ratings/albums"
+          <| fun _ ->
+              let runtime, state =
+                  Helpers.runtimeWith
+                      [ { Method = "GET"
+                          Path = "/v1/me/ratings/albums"
+                          Query = []
+                          Response = Helpers.ok (fixture "ratings-albums-dislikes.json") } ]
+
+              let result = SyncEngine.fetchAlbumRatings validConfig runtime
+              Expect.isOk result "request should succeed"
+              Expect.equal state.Requests.Head.Path "/v1/me/ratings/albums" "should request album ratings"
+
+          testCase "collectExcludedArtists extracts disliked artist names"
+          <| fun _ ->
+              let songRatings = fixture "ratings-songs-dislikes.json"
+              let albumRatings = fixture "ratings-albums-dislikes.json"
+              let excluded = SyncEngine.collectExcludedArtists songRatings albumRatings
+              // Both fixtures have BadArtist with value=-1
+              Expect.isTrue (excluded |> Set.contains "badartist") "BadArtist should be excluded (normalized)"
+              Expect.isFalse (excluded |> Set.contains "goodartist") "GoodArtist should not be excluded"
+              Expect.isFalse (excluded |> Set.contains "otherartist") "OtherArtist should not be excluded"
+
+          testCase "filterByExcludedArtists removes releases by excluded artists"
+          <| fun _ ->
+              let releases : AC.DiscoveredRelease list =
+                  [ { Id = CatalogAlbumId "r1"
+                      ArtistId = CatalogArtistId "bad-1"
+                      ArtistName = "BadArtist"
+                      Name = "Bad Album"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ CatalogTrackId "bad-t1" ] }
+                    { Id = CatalogAlbumId "r2"
+                      ArtistId = CatalogArtistId "good-1"
+                      ArtistName = "GoodArtist"
+                      Name = "Good Album"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ CatalogTrackId "good-t1" ] } ]
+
+              let excluded = Set.ofList [ "badartist" ]
+              let filtered = SyncEngine.filterByExcludedArtists excluded releases
+              Expect.equal filtered.Length 1 "only good artist release should remain"
+              Expect.equal filtered.[0].ArtistName "GoodArtist" "remaining release should be from GoodArtist"
+
+          testCase "collectExcludedArtists only excludes value=-1 artists"
+          <| fun _ ->
+              let songBody = """{"data":[
+                {"attributes":{"value":-1,"artistName":"Disliked"}},
+                {"attributes":{"value":1,"artistName":"Liked"}},
+                {"attributes":{"value":0,"artistName":"Neutral"}}
+              ]}"""
+              let albumBody = """{"data":[]}"""
+              let excluded = SyncEngine.collectExcludedArtists songBody albumBody
+              Expect.isTrue (excluded |> Set.contains "disliked") "value=-1 should be excluded"
+              Expect.isFalse (excluded |> Set.contains "liked") "value=1 should not be excluded"
+              Expect.isFalse (excluded |> Set.contains "neutral") "value=0 should not be excluded"
+
+          testCase "collectExcludedArtists returns empty set when no ratings"
+          <| fun _ ->
+              let excluded = SyncEngine.collectExcludedArtists """{"data":[]}""" """{"data":[]}"""
+              Expect.isEmpty excluded "no ratings should yield empty exclusion set"
+
+          testCase "filterByExcludedArtists with empty set preserves all releases"
+          <| fun _ ->
+              let releases : AC.DiscoveredRelease list =
+                  [ { Id = CatalogAlbumId "r1"
+                      ArtistId = CatalogArtistId "a1"
+                      ArtistName = "Artist1"
+                      Name = "Album1"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ CatalogTrackId "t1" ] }
+                    { Id = CatalogAlbumId "r2"
+                      ArtistId = CatalogArtistId "a2"
+                      ArtistName = "Artist2"
+                      Name = "Album2"
+                      ReleaseDate = Some(DateOnly(2026, 2, 20))
+                      GenreNames = [ "Electronic" ]
+                      TrackIds = [ CatalogTrackId "t2" ] } ]
+
+              let filtered = SyncEngine.filterByExcludedArtists Set.empty releases
+              Expect.equal filtered.Length releases.Length "empty exclusion set should keep all releases"
+        ]

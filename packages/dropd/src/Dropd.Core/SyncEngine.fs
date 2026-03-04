@@ -235,6 +235,47 @@ module SyncEngine =
 
             processBatches [] batches
 
+    /// Parse ratings response and extract artist names for items with value = -1 (dislike).
+    let private parseDislikedArtistNames (body: string) : string list =
+        parseDataArray body (fun item ->
+            let value =
+                item
+                |> tryGetProperty "attributes"
+                |> Option.bind (fun attrs ->
+                    match tryGetProperty "value" attrs with
+                    | Some v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
+                    | _ -> None)
+                |> Option.defaultValue 0
+
+            if value = -1 then
+                item
+                |> tryGetProperty "attributes"
+                |> Option.bind (tryGetString "artistName")
+            else
+                None)
+
+    let fetchSongRatings (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) =
+        executeApple config runtime "GET" "/v1/me/ratings/songs" [] None
+        |> toResult id
+
+    let fetchAlbumRatings (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) =
+        executeApple config runtime "GET" "/v1/me/ratings/albums" [] None
+        |> toResult id
+
+    /// Collect excluded artist names (normalized) from song and album ratings.
+    let collectExcludedArtists (songRatingsBody: string) (albumRatingsBody: string) : Set<string> =
+        let songDislikes = parseDislikedArtistNames songRatingsBody
+        let albumDislikes = parseDislikedArtistNames albumRatingsBody
+        (songDislikes @ albumDislikes)
+        |> List.map Normalization.normalizeText
+        |> Set.ofList
+
+    /// Filter out releases whose artist name (normalized) is in the excluded set.
+    let filterByExcludedArtists (excludedNormalized: Set<string>) (releases: AC.DiscoveredRelease list) : AC.DiscoveredRelease list =
+        releases
+        |> List.filter (fun release ->
+            not (excludedNormalized.Contains(Normalization.normalizeText release.ArtistName)))
+
     let resolveLabelId (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (labelName: string) =
         executeApple
             config
@@ -709,11 +750,34 @@ module SyncEngine =
                     let classifiedReleases, classifyLogs = classifyByGenres config runtimeWithRecording candidateReleases
                     appendLogs classifyLogs
 
+                    // -- Artist dislike filtering (Phase 2) --
+                    // Fetch song and album ratings concurrently since they are independent.
+                    let excludedArtists =
+                        let songResultAsync = async { return fetchSongRatings config runtimeWithRecording }
+                        let albumResultAsync = async { return fetchAlbumRatings config runtimeWithRecording }
+                        let results = Async.Parallel [| songResultAsync; albumResultAsync |] |> Async.RunSynchronously
+                        let songResult, albumResult = results.[0], results.[1]
+                        match songResult, albumResult with
+                        | Ok songBody, Ok albumBody ->
+                            let excluded = collectExcludedArtists songBody albumBody
+                            excluded |> Set.iter (fun artist ->
+                                appendLog
+                                    AC.Info
+                                    "ExcludedDislikedArtist"
+                                    $"Excluded disliked artist from playlist population."
+                                    (Map [ "artist", artist ]))
+                            excluded
+                        | Error _, _ | _, Error _ ->
+                            // Non-fatal: if ratings retrieval fails, skip filtering.
+                            Set.empty
+
+                    let filteredReleases = filterByExcludedArtists excludedArtists classifiedReleases
+
                     let discovery: AC.DiscoveryResult =
                         { SeedArtists = seedArtists
                           SimilarArtists = similarArtists
                           LabelArtists = labelArtists
-                          Releases = classifiedReleases }
+                          Releases = filteredReleases }
 
                     // reconcilePlaylists now returns Async; run it synchronously
                     // at this single top-level call site (Finding 1 / 8).
