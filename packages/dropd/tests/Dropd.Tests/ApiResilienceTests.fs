@@ -104,22 +104,97 @@ let tests =
 
           // DD-083: When an Apple Music API paginated response contains a next link, dropd
           // shall request subsequent pages until next is absent or the page-limit is reached.
-          // Setup: Route page 1 → {data: [...], next: "/page2"}, page 2 → {data: [...], next: null}.
-          // Assert: Both pages are fetched. Combined data is complete.
-          ptestCase "DD-083 follows pagination next links" <| fun _ -> ()
+          testCase "DD-083 follows pagination next links" <| fun _ ->
+              let page1Body = """{
+                "data": [{
+                    "id": "r.abc123", "type": "library-artists",
+                    "attributes": { "name": "Radiohead" },
+                    "relationships": { "catalog": { "data": [{ "id": "657515", "type": "artists", "attributes": { "name": "Radiohead" } }] } }
+                }],
+                "next": "/v1/me/library/artists?offset=25"
+              }"""
+              let page2Body = """{
+                "data": [{
+                    "id": "r.def456", "type": "library-artists",
+                    "attributes": { "name": "Bonobo" },
+                    "relationships": { "catalog": { "data": [{ "id": "5765078", "type": "artists", "attributes": { "name": "Bonobo" } }] } }
+                }]
+              }"""
+
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ] (Always { StatusCode = 200; Body = page1Body; Headers = []; DelayMs = None })
+                      route "apple" "GET" "/v1/me/library/artists?offset=25" [] (Always { StatusCode = 200; Body = page2Body; Headers = []; DelayMs = None })
+                  ]
+
+              let output = runSync resilienceConfig setup
+
+              let libraryArtistRequests =
+                  output.Requests |> List.filter (fun r -> r.Path.StartsWith "/v1/me/library/artists")
+              Expect.equal libraryArtistRequests.Length 2 "should fetch 2 pages of library artists"
+              Expect.notEqual output.Outcome (Some(Aborted "LibraryArtistsFailed")) "outcome should not be aborted"
 
           // DD-084: If the configured page-limit is reached while a next link is still present,
           // then dropd shall log a warning.
-          // Setup: MaxPages = 2. Route 3 pages with next links.
-          // Assert: Only 2 pages fetched. Logs contain Code = PageLimitReached.
-          ptestCase "DD-084 logs warning when page limit reached" <| fun _ -> ()
+          testCase "DD-084 logs warning when page limit reached" <| fun _ ->
+              let config = { resilienceConfig with MaxPages = 1 }
+              let pageBody = """{
+                "data": [{
+                    "id": "r.abc123", "type": "library-artists",
+                    "attributes": { "name": "Radiohead" },
+                    "relationships": { "catalog": { "data": [{ "id": "657515", "type": "artists", "attributes": { "name": "Radiohead" } }] } }
+                }, {
+                    "id": "r.def456", "type": "library-artists",
+                    "attributes": { "name": "Bonobo" },
+                    "relationships": { "catalog": { "data": [{ "id": "5765078", "type": "artists", "attributes": { "name": "Bonobo" } }] } }
+                }],
+                "next": "/v1/me/library/artists?offset=25"
+              }"""
+
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ] (Always { StatusCode = 200; Body = pageBody; Headers = []; DelayMs = None })
+                  ]
+
+              let output = runSync config setup
+
+              let libraryArtistRequests =
+                  output.Requests |> List.filter (fun r -> r.Path.StartsWith "/v1/me/library/artists")
+              Expect.equal libraryArtistRequests.Length 1 "should only fetch 1 page"
+
+              let pageLimitLog = output.Logs |> List.tryFind (fun log -> log.Code = "PageLimitReached")
+              Expect.isSome pageLimitLog "should log PageLimitReached"
+              Expect.isTrue (pageLimitLog.Value.Data.ContainsKey "endpoint") "should include endpoint in log data"
 
           // DD-085: If the configured page-limit is reached while a next link is still present,
           // then dropd shall continue the sync with the fetched subset.
-          // Setup: MaxPages = 2. Route 3 pages with data.
-          // Assert: Sync continues with data from first 2 pages only.
-          //         ObservedOutput.Outcome is not Aborted.
-          ptestCase "DD-085 continues sync with partial data after page limit" <| fun _ -> ()
+          testCase "DD-085 continues sync with partial data after page limit" <| fun _ ->
+              let config = { resilienceConfig with MaxPages = 1 }
+              let pageBody = """{
+                "data": [{
+                    "id": "r.abc123", "type": "library-artists",
+                    "attributes": { "name": "Radiohead" },
+                    "relationships": { "catalog": { "data": [{ "id": "657515", "type": "artists", "attributes": { "name": "Radiohead" } }] } }
+                }, {
+                    "id": "r.def456", "type": "library-artists",
+                    "attributes": { "name": "Bonobo" },
+                    "relationships": { "catalog": { "data": [{ "id": "5765078", "type": "artists", "attributes": { "name": "Bonobo" } }] } }
+                }],
+                "next": "/v1/me/library/artists?offset=25"
+              }"""
+
+              let setup =
+                  baseResilienceSetup [
+                      route "apple" "GET" "/v1/me/library/artists" [ "include", "catalog" ] (Always { StatusCode = 200; Body = pageBody; Headers = []; DelayMs = None })
+                  ]
+
+              let output = runSync config setup
+
+              // Sync should continue despite page limit — verify that album requests were made
+              let albumRequests =
+                  output.Requests |> List.filter (fun r -> r.Path.Contains "/albums")
+              Expect.isTrue (albumRequests.Length >= 1) "sync should continue to fetch albums after page limit"
+              Expect.notEqual output.Outcome (Some(Aborted "PageLimitReached")) "outcome should not be Aborted"
 
           // DD-086: If sync runtime exceeds the configured maximum sync runtime, then dropd
           // shall abort the current sync.

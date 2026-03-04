@@ -198,9 +198,32 @@ module SyncEngine =
         else
             Error response
 
-    let fetchLibraryArtists (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) =
-        executeApple config runtime "GET" "/v1/me/library/artists" [ "include", "catalog" ] None
-        |> toResult parseLibraryArtistsWithCatalog
+    let fetchLibraryArtists
+        (config: Config.ValidSyncConfig)
+        (runtime: AC.ApiRuntime)
+        (appendLog: AC.LogLevel -> string -> string -> Map<string, string> -> unit)
+        : Async<Result<Artist list, AC.ApiResponse>> =
+        async {
+            let firstRequest : AC.ApiRequest =
+                { Service = AC.AppleMusic
+                  Method = "GET"
+                  Path = "/v1/me/library/artists"
+                  Query = [ "include", "catalog" ]
+                  Headers = appleHeaders config "/v1/me/library/artists"
+                  Body = None }
+
+            let maxPages = Config.PositiveInt.value config.MaxPages
+
+            let! result =
+                ResilientPipeline.fetchAllPages runtime maxPages firstRequest parseLibraryArtistsWithCatalogPage
+
+            match result with
+            | Ok (artists, _pages, truncated) ->
+                if truncated then
+                    appendLog AC.Warning "PageLimitReached" "Page limit reached for library artists." (Map [ "endpoint", "/v1/me/library/artists" ])
+                return Ok artists
+            | Error response -> return Error response
+        }
 
     let fetchFavoritedArtists (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (libraryArtists: Artist list) =
         if List.isEmpty libraryArtists then
@@ -300,6 +323,9 @@ module SyncEngine =
                 [])
         |> Option.defaultValue []
 
+    // Phase 3 pagination applies only to top-level next endpoints; label view
+    // payload is nested under views.latest-releases.data and currently non-paginated
+    // in fixtures, so this endpoint stays single-page.
     let private fetchLabelReleases (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (labelId: string) =
         let path = $"/v1/catalog/{config.Storefront}/record-labels/{labelId}"
         executeApple config runtime "GET" path [ "views", "latest-releases" ] None
@@ -365,10 +391,29 @@ module SyncEngine =
         let logs = List.rev logsRev
         artists |> List.distinctBy (fun artist -> artist.Id), releases, logs
 
-    let fetchArtistReleases (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (artistId: CatalogArtistId) =
+    let fetchArtistReleases (config: Config.ValidSyncConfig) (runtime: AC.ApiRuntime) (artistId: CatalogArtistId) (appendLog: AC.LogLevel -> string -> string -> Map<string, string> -> unit) =
         let path = $"/v1/catalog/{config.Storefront}/artists/{artistIdValue artistId}/albums"
-        executeApple config runtime "GET" path [ "sort", "-releaseDate"; "limit", "25" ] None
-        |> toResult parseReleaseList
+
+            let firstRequest : AC.ApiRequest =
+                { Service = AC.AppleMusic
+                  Method = "GET"
+                  Path = path
+                  Query = [ "sort", "-releaseDate"; "limit", "25" ]
+                  Headers = appleHeaders config path
+                  Body = None }
+
+            let maxPages = Config.PositiveInt.value config.MaxPages
+
+            let! result =
+                ResilientPipeline.fetchAllPages runtime maxPages firstRequest parseReleasePage
+
+            match result with
+            | Ok (releases, _pages, truncated) ->
+                if truncated then
+                    appendLog AC.Warning "PageLimitReached" $"Page limit reached for artist releases." (Map [ "endpoint", path ])
+                return Ok releases
+            | Error response -> return Error response
+        }
 
     let filterByLookback (today: DateOnly) (lookbackDays: int) (releases: AC.DiscoveredRelease list) =
         releases |> List.filter (fun release -> Normalization.isWithinLookback today lookbackDays release.ReleaseDate)
@@ -719,7 +764,7 @@ module SyncEngine =
 
         appendLog AC.Info "SyncStarted" "Sync started." Map.empty
 
-        match fetchLibraryArtists config resilientRuntime with
+        match fetchLibraryArtists config resilientRuntime appendLog with
         | Error response ->
             match maybeAuthAbort "/v1/me/library/artists" response with
             | Some reason -> abort reason
@@ -771,7 +816,7 @@ module SyncEngine =
 
                 let artistReleaseResults =
                     allArtists
-                    |> List.map (fun artist -> artist, fetchArtistReleases config resilientRuntime artist.Id)
+                    |> List.map (fun artist -> artist, fetchArtistReleases config resilientRuntime artist.Id appendLog)
 
                 let fatalCatalogError =
                     artistReleaseResults

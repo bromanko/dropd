@@ -156,3 +156,74 @@ let rateLimitTests =
             Expect.equal delays.Count 1 "should record one delay"
             Expect.equal delays.[0] 2000 "delay should be 2000ms (default 2 seconds)"
     ]
+
+[<Tests>]
+let paginationTests =
+    testList "Unit.ResilientPipeline.Pagination" [
+        testCase "follows next links across pages" <| fun _ ->
+            let page1 = """{"data":["a","b"],"next":"/page2"}"""
+            let page2 = """{"data":["c"]}"""
+            let inner, _callCount = fakeRuntime [ okResponse page1; okResponse page2 ]
+
+            let parsePage (body: string) =
+                let doc = System.Text.Json.JsonDocument.Parse(body)
+                let data = doc.RootElement.GetProperty("data")
+                let items = data.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
+                let next = JsonHelpers.tryGetString "next" doc.RootElement
+                items, next
+
+            let result =
+                fetchAllPages inner 5 dummyRequest parsePage
+                |> Async.RunSynchronously
+
+            match result with
+            | Ok (items, pagesFetched, truncated) ->
+                Expect.equal items [ "a"; "b"; "c" ] "should combine items from both pages"
+                Expect.equal pagesFetched 2 "should fetch 2 pages"
+                Expect.isFalse truncated "should not be truncated"
+            | Error _ -> failtest "should not return error"
+
+        testCase "stops at maxPages and sets truncated flag" <| fun _ ->
+            let page1 = """{"data":["a"],"next":"/page2"}"""
+            let page2 = """{"data":["b"],"next":"/page3"}"""
+            let page3 = """{"data":["c"],"next":"/page4"}"""
+            let inner, _callCount = fakeRuntime [ okResponse page1; okResponse page2; okResponse page3 ]
+
+            let parsePage (body: string) =
+                let doc = System.Text.Json.JsonDocument.Parse(body)
+                let data = doc.RootElement.GetProperty("data")
+                let items = data.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
+                let next = JsonHelpers.tryGetString "next" doc.RootElement
+                items, next
+
+            let result =
+                fetchAllPages inner 2 dummyRequest parsePage
+                |> Async.RunSynchronously
+
+            match result with
+            | Ok (items, pagesFetched, truncated) ->
+                Expect.equal items [ "a"; "b" ] "should only have items from 2 pages"
+                Expect.equal pagesFetched 2 "should fetch only 2 pages"
+                Expect.isTrue truncated "should be truncated"
+            | Error _ -> failtest "should not return error"
+
+        testCase "returns Error on non-2xx response" <| fun _ ->
+            let page1 = """{"data":["a"],"next":"/page2"}"""
+            let inner, _callCount = fakeRuntime [ okResponse page1; errorResponse 500 ]
+
+            let parsePage (body: string) =
+                let doc = System.Text.Json.JsonDocument.Parse(body)
+                let data = doc.RootElement.GetProperty("data")
+                let items = data.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
+                let next = JsonHelpers.tryGetString "next" doc.RootElement
+                items, next
+
+            let result =
+                fetchAllPages inner 5 dummyRequest parsePage
+                |> Async.RunSynchronously
+
+            match result with
+            | Error resp ->
+                Expect.equal resp.StatusCode 500 "should return 500 error"
+            | Ok _ -> failtest "should return error"
+    ]

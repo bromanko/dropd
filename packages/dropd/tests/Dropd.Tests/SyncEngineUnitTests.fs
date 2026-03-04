@@ -86,7 +86,7 @@ let seedingAndLabelTests =
                           Query = []
                           Response = Helpers.ok (fixture "library-artists.json") } ]
 
-              let result = SyncEngine.fetchLibraryArtists validConfig runtime
+              let result = SyncEngine.fetchLibraryArtists validConfig runtime (fun _ _ _ _ -> ()) |> Async.RunSynchronously
               Expect.isOk result "library request should succeed"
               Expect.equal state.Requests.Head.Path "/v1/me/library/artists" "path should match"
               Expect.isTrue
@@ -156,7 +156,7 @@ let seedingAndLabelTests =
                           Query = []
                           Response = Helpers.ok body } ]
 
-              let result = SyncEngine.fetchLibraryArtists validConfig runtime
+              let result = SyncEngine.fetchLibraryArtists validConfig runtime (fun _ _ _ _ -> ()) |> Async.RunSynchronously
               let artists = Result.defaultValue [] result
               Expect.equal artists.Length 1 "only the artist with catalog data should be returned"
               Expect.equal artists.[0].Id (CatalogArtistId "657515") "returned artist should be the catalog-mapped one"
@@ -201,7 +201,7 @@ let seedingAndLabelTests =
                           Query = []
                           Response = Helpers.ok body } ]
 
-              let result = SyncEngine.fetchLibraryArtists validConfig runtime
+              let result = SyncEngine.fetchLibraryArtists validConfig runtime (fun _ _ _ _ -> ()) |> Async.RunSynchronously
               let artists = Result.defaultValue [] result
               Expect.equal artists.Length 1 "artist with empty catalog data should be excluded"
               Expect.equal artists.[0].Id (CatalogArtistId "657515") "only valid catalog artist returned"
@@ -236,7 +236,7 @@ let seedingAndLabelTests =
                           Query = []
                           Response = Helpers.ok body } ]
 
-              let result = SyncEngine.fetchLibraryArtists validConfig runtime
+              let result = SyncEngine.fetchLibraryArtists validConfig runtime (fun _ _ _ _ -> ()) |> Async.RunSynchronously
               let artists = Result.defaultValue [] result
               Expect.equal artists.Length 1 "artist should still be returned"
               Expect.equal artists.[0].Name "999999" "name should fall back to catalog ID"
@@ -399,7 +399,7 @@ let releaseAndGenreTests =
                           Query = [ "sort", "-releaseDate" ]
                           Response = Helpers.ok (fixture "artist-albums-657515.json") } ]
 
-              let result = SyncEngine.fetchArtistReleases validConfig runtime (CatalogArtistId "657515")
+              let result = SyncEngine.fetchArtistReleases validConfig runtime (CatalogArtistId "657515") (fun _ _ _ _ -> ()) |> Async.RunSynchronously
               Expect.isOk result "request should succeed"
               Expect.isTrue (state.Requests.Head.Query |> List.contains ("sort", "-releaseDate")) "sort param should be present"
 
@@ -447,7 +447,7 @@ let authAndLogTests =
                           Query = [ "sort", "-releaseDate" ]
                           Response = Helpers.ok (fixture "artist-albums-657515.json") } ]
 
-              let _ = SyncEngine.fetchArtistReleases validConfig runtime (CatalogArtistId "657515")
+              let _ = SyncEngine.fetchArtistReleases validConfig runtime (CatalogArtistId "657515") (fun _ _ _ _ -> ()) |> Async.RunSynchronously
               let headers = state.Requests.Head.Headers
               Expect.isTrue (headers |> List.exists (fun (k, v) -> k = "Authorization" && v = "Bearer dev-token")) "auth header required"
 
@@ -460,7 +460,7 @@ let authAndLogTests =
                           Query = []
                           Response = Helpers.ok (fixture "library-artists.json") } ]
 
-              let _ = SyncEngine.fetchLibraryArtists validConfig runtime
+              let _ = SyncEngine.fetchLibraryArtists validConfig runtime (fun _ _ _ _ -> ()) |> Async.RunSynchronously
               let headers = state.Requests.Head.Headers
               Expect.isTrue (headers |> List.exists (fun (k, v) -> k = "Music-User-Token" && v = "user-token")) "music-user-token required"
 

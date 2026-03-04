@@ -138,46 +138,30 @@ module PlaylistReconcile =
 
     /// Fetch all tracks from a playlist, following pagination `next` links.
     /// Returns Ok tracks on success, or Error on the first failed page request.
-    /// A 404 response (empty playlist) is treated as zero tracks.
+    /// A 404 response (empty playlist) is treated as zero tracks via fetchAllPages.
     let private fetchAllPlaylistTracks
         (config: Config.ValidSyncConfig)
         (runtime: AC.ApiRuntime)
         (playlistId: string)
         : Async<Result<ExistingTrack list, int>> =
         async {
-            let maxPages = 20
-            let acc = ResizeArray<ExistingTrack>()
-            let mutable nextPath = Some(playlistTracksPath playlistId)
-            let mutable page = 0
-            let mutable error = None
+            let maxPages = Config.PositiveInt.value config.MaxPages
+            let path = playlistTracksPath playlistId
 
-            while nextPath.IsSome && page < maxPages && error.IsNone do
-                let path = nextPath.Value
+            let firstRequest: AC.ApiRequest =
+                { Service = AC.AppleMusic
+                  Method = "GET"
+                  Path = path
+                  Query = []
+                  Headers = appleHeaders config path
+                  Body = None }
 
-                let request: AC.ApiRequest =
-                    { Service = AC.AppleMusic
-                      Method = "GET"
-                      Path = path
-                      Query = []
-                      Headers = appleHeaders config path
-                      Body = None }
+            let! result =
+                ResilientPipeline.fetchAllPages runtime maxPages firstRequest parseExistingTracksPage
 
-                let! response = runtime.Execute request
-
-                if response.StatusCode >= 200 && response.StatusCode < 300 then
-                    acc.AddRange(parseExistingTracks response.Body)
-                    nextPath <- parseNextLink response.Body
-                    page <- page + 1
-                elif response.StatusCode = 404 then
-                    // Apple Music returns 404 for empty playlists.
-                    nextPath <- None
-                else
-                    error <- Some response.StatusCode
-                    nextPath <- None
-
-            match error with
-            | Some status -> return Error status
-            | None -> return Ok(acc |> Seq.toList)
+            match result with
+            | Ok (tracks, _pages, _truncated) -> return Ok tracks
+            | Error response -> return Error response.StatusCode
         }
 
     let computePlan
