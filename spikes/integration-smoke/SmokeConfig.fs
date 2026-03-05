@@ -39,18 +39,16 @@ let load () : Result<Config.SyncConfig, string> =
     // Resolve them relative to the assembly location so this works regardless
     // of which directory `dotnet run` is invoked from.
     let assemblyDir = Path.GetDirectoryName(Reflection.Assembly.GetExecutingAssembly().Location)
-    let localPath   = Path.Combine(assemblyDir, "config.local.json")
-    let examplePath = Path.Combine(assemblyDir, "config.example.json")
+    let localPath = Path.Combine(assemblyDir, "config.local.json")
+    let basePath  = Path.Combine(assemblyDir, "config.json")
 
     let configPath =
-        if   File.Exists(localPath)   then Ok localPath
-        elif File.Exists(examplePath) then Ok examplePath
+        if   File.Exists(localPath) then Ok localPath
+        elif File.Exists(basePath)  then Ok basePath
         else
             Error (
-                "No config file found. Copy config.example.json to config.local.json " +
-                "in spikes/integration-smoke/ and rebuild:\n" +
-                "  cp spikes/integration-smoke/config.example.json " +
-                "spikes/integration-smoke/config.local.json")
+                "No config file found. Expected config.json (or config.local.json override) " +
+                "in spikes/integration-smoke/.")
 
     match configPath with
     | Error msg -> Error msg

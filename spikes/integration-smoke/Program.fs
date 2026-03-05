@@ -76,7 +76,7 @@ let private savePlaylistCache (ids: Map<string, string>) =
 let main _argv =
     printfn ""
     printfn "════════════════════════════════════════"
-    printfn "  dropd — Integration Smoke"
+    printfn "  dropd — Live Sync"
     printfn "════════════════════════════════════════"
 
     match SmokeConfig.load () with

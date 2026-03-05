@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="config.example.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="config.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="config.local.json"
              Condition="Exists('config.local.json')"
              CopyToOutputDirectory="PreserveNewest" />
